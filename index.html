@@ -13,6 +13,9 @@
     .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
     #stageWrap{position:relative;height:100%;min-height:360px;background:#fff}
     canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
+    .palette button{
+      width:24px;height:24px;border-radius:50%;padding:0;border:2px solid #ccc;cursor:pointer;
+    }
   </style>
 </head>
 <body>
@@ -20,12 +23,23 @@
   <div class="toolbar">
     <label>太さ <input id="size" type="range" min="1" max="30" value="4"></label>
     <label>色 <input id="color" type="color" value="#111111"></label>
+
+    <!-- 🎨 色パレット -->
+    <div class="palette">
+      <button data-color="#000000" style="background:#000000"></button>
+      <button data-color="#ff0000" style="background:#ff0000"></button>
+      <button data-color="#0000ff" style="background:#0000ff"></button>
+      <button data-color="#008000" style="background:#008000"></button>
+      <button data-color="#ffa500" style="background:#ffa500"></button>
+      <button data-color="#ffff00" style="background:#ffff00"></button>
+    </div>
+
     <button id="penBtn">✒️ペン</button>
     <button id="eraserBtn">🧽消しゴム</button>
     <label><input type="checkbox" id="penOnly">ペンのみ</label>
     <button id="undoBtn">↶Undo</button>
     <button id="redoBtn">↷Redo</button>
-    <button id="clearBtn">🗑 全消去</button><!-- ←追加 -->
+    <button id="clearBtn">🗑 全消去</button>
     <input type="file" id="pdfInput" accept="application/pdf">
     <button id="prevPage">◀</button>
     <span id="pageInfo">-/-</span>
@@ -40,11 +54,9 @@
 </div>
 
 <script type="module">
-  // ===== PDF.js（ESM）を読み込み。build/ に pdf.mjs / pdf.worker.mjs を置く =====
   import * as pdfjsLib from './build/pdf.mjs';
   pdfjsLib.GlobalWorkerOptions.workerSrc = './build/pdf.worker.mjs';
 
-  // ===== 参照と状態 =====
   const pdfCanvas=document.getElementById('pdfLayer'),
         inkCanvas=document.getElementById('inkLayer'),
         pdfCtx=pdfCanvas.getContext('2d'),
@@ -59,12 +71,13 @@
     penOnly:document.getElementById('penOnly'),
     undoBtn:document.getElementById('undoBtn'),
     redoBtn:document.getElementById('redoBtn'),
-    clearBtn:document.getElementById('clearBtn'), // ←追加
+    clearBtn:document.getElementById('clearBtn'),
     pdfInput:document.getElementById('pdfInput'),
     prev:document.getElementById('prevPage'),
     next:document.getElementById('nextPage'),
     info:document.getElementById('pageInfo'),
     savePNGBtn:document.getElementById('savePNGBtn'),
+    palette:document.querySelectorAll('.palette button')
   };
 
   const state={
@@ -87,7 +100,7 @@
   }
   window.addEventListener('resize', ()=>{ resize(); if(state.pdf) drawPDF(); else redrawInk(); });
 
-  // ===== 描画処理（破線対策の補間つき） =====
+  // ===== 描画処理 =====
   function drawLine(ctx,a,b,opt){
     const pressure=b.pres??1, base=opt.size||state.size;
     const w=opt.pressure? base*pressure: base;
@@ -158,18 +171,24 @@
   // ===== イベント =====
   ui.size.addEventListener('input', ()=> state.size=+ui.size.value);
   ui.color.addEventListener('input', ()=> state.color=ui.color.value);
+  ui.palette.forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.color=btn.dataset.color;
+      ui.color.value=btn.dataset.color; // カラーピッカーも同期
+    });
+  });
+
   ui.penOnly.addEventListener('change', e=> state.penOnly=e.target.checked);
   ui.penBtn.onclick=()=> state.tool='pen';
   ui.eraserBtn.onclick=()=> state.tool='eraser';
   ui.undoBtn.onclick=undo;
   ui.redoBtn.onclick=redo;
 
-  // ★ 全消去（手書きのみ消す。PDFは保持）
   ui.clearBtn.onclick=()=>{
     if(confirm('手書きの内容をすべて消去します。よろしいですか？')){
       state.history=[]; state.redoStack=[];
       inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr);
-      if(state.pdf) drawPDF(); // PDFを再描画して完全クリア
+      if(state.pdf) drawPDF();
     }
   };
 
@@ -192,7 +211,6 @@
     const a=document.createElement('a'); a.href=out.toDataURL('image/png'); a.download='note.png'; a.click();
   };
 
-  // ===== 起動 =====
   window.addEventListener('load', ()=>{ resize(); });
 </script>
 </body>
