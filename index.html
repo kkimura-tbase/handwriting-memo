@@ -38,13 +38,8 @@
 
 <!-- ★ ここから ESM（モジュール）版で読み込みます -->
 <script type="module">
-  // ↓ pdf.mjs / pdf.worker.mjs がある場所（今回の構成なら "build/"）
-  const PDFJS_PATH = './build/';
-
-  // PDF.js を ES Modules として読み込み
-  import * as pdfjsLib from `${PDFJS_PATH}pdf.mjs`;
-  // Worker も ES Modules 版を使う
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_PATH}pdf.worker.mjs`;
+  import * as pdfjsLib from './build/pdf.mjs';
+  pdfjsLib.GlobalWorkerOptions.workerSrc = './build/pdf.worker.mjs';
 
   // --- 以降、アプリ本体 ---
   const pdfCanvas = document.getElementById('pdfLayer'),
@@ -179,3 +174,4 @@
 </script>
 </body>
 </html>
+
