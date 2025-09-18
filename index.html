@@ -18,17 +18,21 @@
 <body>
 <div class="app">
   <div class="toolbar">
-    <label>太さ <input id="size" type="range" min="1" max="30" value="4"></label>
-    <label>色 <input id="color" type="color" value="#111111"></label>
-    <button id="penBtn">✒️ペン</button>
-    <button id="eraserBtn">🧽消しゴム</button>
-    <label><input type="checkbox" id="penOnly">ペンのみ</label>
-    <button id="undoBtn">↶Undo</button>
-    <button id="redoBtn">↷Redo</button>
-    <input type="file" id="pdfInput" accept="application/pdf">
-    <button id="prevPage">◀</button><span id="pageInfo">-/-</span><button id="nextPage">▶</button>
-    <button id="savePNGBtn">PNG保存</button>
-  </div>
+  <label>太さ <input id="size" type="range" min="1" max="30" value="4"></label>
+  <label>色 <input id="color" type="color" value="#111111"></label>
+  <button id="penBtn">✒️ペン</button>
+  <button id="eraserBtn">🧽消しゴム</button>
+  <label><input type="checkbox" id="penOnly">ペンのみ</label>
+  <button id="undoBtn">↶Undo</button>
+  <button id="redoBtn">↷Redo</button>
+  <input type="file" id="pdfInput" accept="application/pdf">
+  <!-- ここを修正 -->
+  <button id="prevPage">◀</button>
+  <span id="pageInfo">-/-</span>
+  <button id="nextPage">▶</button>
+  <!-- ここまで修正 -->
+  <button id="savePNGBtn">PNG保存</button>
+</div>
   <div id="stageWrap">
     <canvas id="pdfLayer"></canvas>
     <canvas id="inkLayer"></canvas>
@@ -174,4 +178,5 @@
 </script>
 </body>
 </html>
+
 
