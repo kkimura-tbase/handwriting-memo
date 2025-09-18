@@ -104,8 +104,25 @@
     stageWrap:document.getElementById('stageWrap'),
   };
 
+  // --- rgb()/rgba()/色名/#rgb を #rrggbb に正規化 ---
+  function toHexColor(input) {
+    if (!input) return '#111111';
+    let c = String(input).trim().toLowerCase();
+    if (c.startsWith('#')) {
+      if (c.length === 4) { const r=c[1], g=c[2], b=c[3]; return `#${r}${r}${g}${g}${b}${b}`; }
+      return c.slice(0,7);
+    }
+    const m = c.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (m) {
+      const to2 = n=>Math.max(0, Math.min(255, parseInt(n,10))).toString(16).padStart(2,'0');
+      return `#${to2(m[1])}${to2(m[2])}${to2(m[3])}`;
+    }
+    const NAME = { black:'#000000', white:'#ffffff', red:'#ff0000', blue:'#0000ff', green:'#008000', yellow:'#ffff00', orange:'#ffa500', gray:'#808080', grey:'#808080' };
+    return NAME[c] || '#111111';
+  }
+
   const state={
-    tool:'pen', color:ui.color.value, size:+ui.size.value, penOnly:false,
+    tool:'pen', color:toHexColor(ui.color.value), size:+ui.size.value, penOnly:false,
     drawing:false, last:null, stroke:[], history:[], redoStack:[],
     pdf:null, page:1, totalPages:0,
     texts:[], // {el}
@@ -124,15 +141,16 @@
   setActiveTool('pen');
 
   function setSelectedPalette(color){
-    state.color = color;
-    ui.color.value = color;
+    const hex = toHexColor(color);
+    state.color = hex;
+    ui.color.value = hex;
     for(const btn of ui.paletteBtns){
-      btn.classList.toggle('sel', btn.dataset.color?.toLowerCase()===color.toLowerCase());
+      btn.classList.toggle('sel', btn.dataset.color?.toLowerCase()===hex.toLowerCase());
     }
     const sel = document.querySelector('.textbox.sel');
-    if(sel){ sel.style.color = color; sel.dataset.color = color; }
+    if(sel){ sel.style.color = hex; sel.dataset.color = hex; }
   }
-  setSelectedPalette(ui.color.value);
+  setSelectedPalette(toHexColor(ui.color.value));
 
   // ---- layout ----
   function resize(){
@@ -194,6 +212,7 @@
   ['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t,end));
 
   // ---- text boxes ----
+  const textLayerEl = document.getElementById('textLayer');
   function createTextbox(x,y,opts={}){
     const el = document.createElement('div');
     el.className='textbox sel';
@@ -202,8 +221,8 @@
     el.style.left = x+'px';
     el.style.top = y+'px';
     el.style.fontSize = (opts.fontSize || +ui.fontSize.value) + 'px';
-    el.style.color = opts.color || state.color;
-    el.dataset.color = el.style.color;
+    el.style.color = toHexColor(opts.color || state.color);
+    el.dataset.color = toHexColor(el.style.color);
     el.dataset.fontSize = parseInt(el.style.fontSize,10);
     el.dataset.page = String(state.page);
 
@@ -230,27 +249,38 @@
     });
     ['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=> el.addEventListener(t, ()=> dragging=false ));
 
-    textLayer.appendChild(el);
+    textLayerEl.appendChild(el);
     el.focus();
     state.texts.push({el});
     return el;
   }
+
+  // ★ここを修正：常にHEXに正規化してからUIへ反映
   function selectTextbox(el){
     document.querySelectorAll('.textbox.sel').forEach(n=> n.classList.remove('sel'));
     el.classList.add('sel');
-    ui.color.value = el.dataset.color || '#111111';
-    setSelectedPalette(ui.color.value);
-    if(el.dataset.fontSize) ui.fontSize.value = el.dataset.fontSize;
+
+    const colSrc = el.dataset.color || el.style.color || getComputedStyle(el).color;
+    const hex = toHexColor(colSrc);
+
+    el.dataset.color = hex;
+    el.style.color = hex;
+
+    ui.color.value = hex;
+    setSelectedPalette(hex);
+
+    if (el.dataset.fontSize) ui.fontSize.value = el.dataset.fontSize;
   }
+
   function removeTextbox(el){
     const idx = state.texts.findIndex(t=> t.el===el);
     if(idx>=0) state.texts.splice(idx,1);
     el.remove();
   }
 
-  textLayer.addEventListener('pointerdown', (e)=>{
+  textLayerEl.addEventListener('pointerdown', (e)=>{
     if(state.tool!=='text') return;
-    const r = textLayer.getBoundingClientRect();
+    const r = textLayerEl.getBoundingClientRect();
     const x = e.clientX - r.left, y = e.clientY - r.top;
     createTextbox(x, y, { fontSize:+ui.fontSize.value, color:state.color });
   });
@@ -259,7 +289,9 @@
     const sel = document.querySelector('.textbox.sel');
     if(sel){ sel.style.fontSize = (+ui.fontSize.value)+'px'; sel.dataset.fontSize = +ui.fontSize.value; }
   });
-  ui.color.addEventListener('input', ()=> setSelectedPalette(ui.color.value));
+
+  // ← カラーピッカーもHEXに正規化してから反映
+  ui.color.addEventListener('input', ()=> setSelectedPalette(toHexColor(ui.color.value)));
   ui.paletteWrap.addEventListener('click', (e)=>{
     const btn = e.target.closest('button[data-color]'); if(!btn) return;
     setSelectedPalette(btn.dataset.color);
@@ -293,7 +325,7 @@
       inkCanvas.width=W; inkCanvas.height=H;
       pdfCanvas.style.width=vp.width+'px'; pdfCanvas.style.height=vp.height+'px';
       inkCanvas.style.width=vp.width+'px'; inkCanvas.style.height=vp.height+'px';
-      textLayer.style.width=vp.width+'px'; textLayer.style.height=vp.height+'px';
+      textLayerEl.style.width=vp.width+'px'; textLayerEl.style.height=vp.height+'px';
       pdfCtx.setTransform(dpr,0,0,dpr,0,0); inkCtx.setTransform(dpr,0,0,dpr,0,0);
       p.render({canvasContext:pdfCtx,viewport:vp}).promise.then(()=> { redrawInk(); filterTextForPage(); });
       ui.info.textContent=`${state.page}/${state.totalPages}`;
@@ -346,8 +378,8 @@
     o.drawImage(inkCanvas,0,0);
 
     const curr = String(state.page);
-    const cssW = parseFloat(getComputedStyle(textLayer).width);
-    const cssH = parseFloat(getComputedStyle(textLayer).height);
+    const cssW = parseFloat(getComputedStyle(textLayerEl).width);
+    const cssH = parseFloat(getComputedStyle(textLayerEl).height);
     const scaleX = pdfCanvas.width / cssW;
     const scaleY = pdfCanvas.height / cssH;
 
@@ -355,7 +387,7 @@
       if(el.dataset.page!==curr) return;
       const x = parseFloat(el.style.left)||0;
       const y = parseFloat(el.style.top)||0;
-      const color = el.dataset.color || '#111';
+      const color = toHexColor(el.dataset.color || '#111');
       const fontSize = parseInt(el.dataset.fontSize||'18',10);
       const text = el.innerText.replace(/\r/g,'');
       o.fillStyle = color;
@@ -379,7 +411,6 @@
     const isMac = navigator.platform.toUpperCase().includes('MAC');
     const meta = isMac ? e.metaKey : e.ctrlKey;
 
-    // 編集中はショートカット抑制（ただし Cmd/Ctrl+Enter で選択解除可）
     if(isEditableTarget(e.target)){
       if(meta && e.key==='Enter'){ e.preventDefault(); if (e.target && typeof e.target.blur === 'function') e.target.blur(); }
       return;
