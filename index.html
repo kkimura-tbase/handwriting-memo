@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>手書きメモ（PDF注釈/テキスト対応・ESM版）</title>
-  <link rel="icon" href="data:,"><!-- favicon 404回避 -->
+  <link rel="icon" href="data:,">
   <style>
     html,body{height:100%;margin:0;font-family:system-ui}
     .app{display:grid;grid-template-rows:auto 1fr;height:100%}
@@ -14,7 +14,6 @@
     #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto}
     canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
 
-    /* アクティブ状態の見た目（ペン/消しゴム/テキスト） */
     .tool-btn{transition:.15s ease}
     .tool-btn.active{ background:#e8f0fe;border-color:#6a9bff;box-shadow:0 0 0 2px #cfe0ff inset }
 
@@ -24,7 +23,6 @@
     }
     .palette button.sel{ box-shadow:0 0 0 3px #444 inset; border-color:#222; }
 
-    /* テキストボックス */
     .textbox{
       position:absolute; min-width:40px; min-height:24px; padding:2px 4px;
       outline:none; border:1px dashed transparent; white-space:pre-wrap; word-break:break-word;
@@ -39,6 +37,7 @@
   <div class="toolbar">
     <label>太さ <input id="size" type="range" min="1" max="30" value="4"></label>
     <label>色 <input id="color" type="color" value="#111111"></label>
+
     <div class="palette" id="palette">
       <button data-color="#000000" style="background:#000000" aria-label="黒 (1)"></button>
       <button data-color="#ff0000" style="background:#ff0000" aria-label="赤 (2)"></button>
@@ -69,7 +68,6 @@
   <div id="stageWrap">
     <canvas id="pdfLayer"></canvas>
     <canvas id="inkLayer"></canvas>
-    <!-- テキスト用のレイヤ（絶対配置のdivを載せる） -->
     <div id="textLayer" style="position:absolute; inset:0;"></div>
   </div>
 </div>
@@ -110,10 +108,10 @@
     tool:'pen', color:ui.color.value, size:+ui.size.value, penOnly:false,
     drawing:false, last:null, stroke:[], history:[], redoStack:[],
     pdf:null, page:1, totalPages:0,
-    texts:[], // {el, x, y, fontSize, color, page}
+    texts:[], // {el}
   };
 
-  // ------- UI helpers -------
+  // ---- UI helpers ----
   function setActiveTool(tool){
     state.tool = tool;
     const map = {pen:ui.penBtn, eraser:ui.eraserBtn, text:ui.textBtn};
@@ -131,13 +129,12 @@
     for(const btn of ui.paletteBtns){
       btn.classList.toggle('sel', btn.dataset.color?.toLowerCase()===color.toLowerCase());
     }
-    // 選択中テキストの色も更新
     const sel = document.querySelector('.textbox.sel');
     if(sel){ sel.style.color = color; sel.dataset.color = color; }
   }
   setSelectedPalette(ui.color.value);
 
-  // ------- layout -------
+  // ---- layout ----
   function resize(){
     const wrap=ui.stageWrap;
     const cssW=wrap.clientWidth,
@@ -151,9 +148,9 @@
     pdfCtx.setTransform(dpr,0,0,dpr,0,0);
     inkCtx.setTransform(dpr,0,0,dpr,0,0);
   }
-  window.addEventListener('resize', ()=>{ resize(); if(state.pdf) drawPDF(); else { redrawInk(); positionTextboxes(); } });
+  window.addEventListener('resize', ()=>{ resize(); if(state.pdf) drawPDF(); else { redrawInk(); } });
 
-  // ------- pen/eraser drawing -------
+  // ---- pen/eraser drawing ----
   function drawLine(ctx,a,b,opt){
     const pressure=b.pres??1, base=opt.size||state.size;
     const w=opt.pressure? base*pressure: base;
@@ -184,7 +181,6 @@
     state.drawing=false; state.history.push({ops:state.stroke}); state.redoStack=[];
   }
 
-  // ペン/消しゴムの入力
   inkCanvas.addEventListener('pointerdown',e=>{
     if(state.tool!=='pen' && state.tool!=='eraser') return;
     if(state.penOnly&&e.pointerType!=='pen')return;
@@ -197,7 +193,7 @@
   });
   ['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t,end));
 
-  // ------- text boxes -------
+  // ---- text boxes ----
   function createTextbox(x,y,opts={}){
     const el = document.createElement('div');
     el.className='textbox sel';
@@ -209,18 +205,16 @@
     el.style.color = opts.color || state.color;
     el.dataset.color = el.style.color;
     el.dataset.fontSize = parseInt(el.style.fontSize,10);
-    el.dataset.page = String(state.page); // そのページ上のテキストとして紐付け
+    el.dataset.page = String(state.page);
 
     el.addEventListener('focus', ()=> selectTextbox(el));
     el.addEventListener('blur', ()=> el.classList.remove('sel'));
     el.addEventListener('keydown', (e)=>{
-      // Deleteで空なら削除
       if((e.key==='Backspace' || e.key==='Delete') && el.textContent===''){
         e.preventDefault(); removeTextbox(el);
       }
     });
 
-    // ドラッグ移動
     let dragging=false, sx=0, sy=0, startLeft=0, startTop=0;
     el.addEventListener('pointerdown', (e)=>{
       dragging=true; el.setPointerCapture(e.pointerId);
@@ -244,7 +238,6 @@
   function selectTextbox(el){
     document.querySelectorAll('.textbox.sel').forEach(n=> n.classList.remove('sel'));
     el.classList.add('sel');
-    // 現在の色/サイズUIと同期
     ui.color.value = el.dataset.color || '#111111';
     setSelectedPalette(ui.color.value);
     if(el.dataset.fontSize) ui.fontSize.value = el.dataset.fontSize;
@@ -254,21 +247,14 @@
     if(idx>=0) state.texts.splice(idx,1);
     el.remove();
   }
-  function positionTextboxes(){
-    // PDFのスケールが変わった時に再配置したい場合はここで対応
-    // 今回は画面幅フィットなので、キャンバスとtextLayerは同じCSSサイズにしており、不要。
-  }
 
-  // テキストツール時のクリックで新規作成
   textLayer.addEventListener('pointerdown', (e)=>{
     if(state.tool!=='text') return;
-    // クリック位置に作成
     const r = textLayer.getBoundingClientRect();
     const x = e.clientX - r.left, y = e.clientY - r.top;
     createTextbox(x, y, { fontSize:+ui.fontSize.value, color:state.color });
   });
 
-  // UIからの色/サイズ変更で選択中テキストも反映
   ui.fontSize.addEventListener('input', ()=>{
     const sel = document.querySelector('.textbox.sel');
     if(sel){ sel.style.fontSize = (+ui.fontSize.value)+'px'; sel.dataset.fontSize = +ui.fontSize.value; }
@@ -279,7 +265,7 @@
     setSelectedPalette(btn.dataset.color);
   });
 
-  // ------- history & redraw -------
+  // ---- history & redraw ----
   function redrawInk(){
     inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr);
     state.history.forEach(h=>{
@@ -293,7 +279,7 @@
   function undo(){ if(state.history.length){ state.redoStack.push(state.history.pop()); redrawInk(); } }
   function redo(){ if(state.redoStack.length){ state.history.push(state.redoStack.pop()); redrawInk(); } }
 
-  // ------- PDF -------
+  // ---- PDF ----
   function drawPDF(){
     if(!state.pdf) return;
     const wrap=ui.stageWrap;
@@ -302,7 +288,6 @@
       const v=p.getViewport({scale:1});
       const scale=targetWidth / v.width;
       const vp=p.getViewport({scale});
-      // Canvas & TextLayer サイズを合わせる
       const W=Math.floor(vp.width*dpr), H=Math.floor(vp.height*dpr);
       pdfCanvas.width=W; pdfCanvas.height=H;
       inkCanvas.width=W; inkCanvas.height=H;
@@ -315,14 +300,13 @@
     });
   }
   function filterTextForPage(){
-    // 表示ページ以外のテキストは隠す
     const curr = String(state.page);
     state.texts.forEach(t=>{
       const el=t.el; el.style.display = (el.dataset.page===curr) ? 'block' : 'none';
     });
   }
 
-  // ------- events -------
+  // ---- events ----
   ui.size.addEventListener('input', ()=> state.size=+ui.size.value);
   ui.penOnly.addEventListener('change', e=> state.penOnly=e.target.checked);
   ui.penBtn.onclick = ()=> setActiveTool('pen');
@@ -335,7 +319,6 @@
     if(confirm('手書きの内容とテキストをすべて消去します。よろしいですか？')){
       state.history=[]; state.redoStack=[];
       inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr);
-      // テキストも削除
       state.texts.forEach(t=> t.el.remove());
       state.texts=[];
       if(state.pdf) drawPDF();
@@ -356,14 +339,12 @@
   ui.next.onclick=()=>{ if(state.pdf && state.page<state.totalPages){ state.page++; drawPDF(); } };
 
   function savePNG(){
-    // PDF + 手書き + テキストを合成
     const out=document.createElement('canvas');
     out.width=pdfCanvas.width; out.height=pdfCanvas.height;
     const o=out.getContext('2d');
     o.drawImage(pdfCanvas,0,0);
     o.drawImage(inkCanvas,0,0);
 
-    // このページのテキストだけ描画
     const curr = String(state.page);
     const cssW = parseFloat(getComputedStyle(textLayer).width);
     const cssH = parseFloat(getComputedStyle(textLayer).height);
@@ -376,12 +357,10 @@
       const y = parseFloat(el.style.top)||0;
       const color = el.dataset.color || '#111';
       const fontSize = parseInt(el.dataset.fontSize||'18',10);
-      const text = el.innerText.replace(/\r/g,''); // 改行維持
-
+      const text = el.innerText.replace(/\r/g,'');
       o.fillStyle = color;
       o.textBaseline = 'top';
       o.font = `${Math.round(fontSize*dpr)}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Noto Sans JP", sans-serif`;
-      // 複数行対応
       const lines = text.split('\n');
       const lineHeight = Math.round(fontSize*1.3*dpr);
       for(let i=0;i<lines.length;i++){
@@ -400,10 +379,9 @@
     const isMac = navigator.platform.toUpperCase().includes('MAC');
     const meta = isMac ? e.metaKey : e.ctrlKey;
 
-    // 編集中のテキスト/入力ではショートカット無効
+    // 編集中はショートカット抑制（ただし Cmd/Ctrl+Enter で選択解除可）
     if(isEditableTarget(e.target)){
-      // Cmd/Ctrl+Enter でテキストの選択解除（便利機能）
-      if(meta && e.key==='Enter'){ e.preventDefault(); (e.target as HTMLElement)?.blur?.(); }
+      if(meta && e.key==='Enter'){ e.preventDefault(); if (e.target && typeof e.target.blur === 'function') e.target.blur(); }
       return;
     }
 
