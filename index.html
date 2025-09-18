@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>手書きメモ（PDF注釈 / ESM版）</title>
+  <title>手書きメモ（PDF注釈/テキスト対応・ESM版）</title>
   <link rel="icon" href="data:,"><!-- favicon 404回避 -->
   <style>
     html,body{height:100%;margin:0;font-family:system-ui}
@@ -11,23 +11,27 @@
     .toolbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;
              padding:.6rem;background:#f6f6f6;border-bottom:1px solid #ddd}
     .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
-    #stageWrap{position:relative;height:100%;min-height:360px;background:#fff}
+    #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto}
     canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
 
-    /* アクティブ状態の見た目（ペン/消しゴム） */
+    /* アクティブ状態の見た目（ペン/消しゴム/テキスト） */
     .tool-btn{transition:.15s ease}
-    .tool-btn.active{
-      background:#e8f0fe;            /* 薄い青 */
-      border-color:#6a9bff;
-      box-shadow:0 0 0 2px #cfe0ff inset;
-    }
+    .tool-btn.active{ background:#e8f0fe;border-color:#6a9bff;box-shadow:0 0 0 2px #cfe0ff inset }
 
-    /* 色パレット */
     .palette button{
       width:24px;height:24px;border-radius:50%;padding:0;border:2px solid #ccc;cursor:pointer;
       display:inline-block; vertical-align:middle;
     }
     .palette button.sel{ box-shadow:0 0 0 3px #444 inset; border-color:#222; }
+
+    /* テキストボックス */
+    .textbox{
+      position:absolute; min-width:40px; min-height:24px; padding:2px 4px;
+      outline:none; border:1px dashed transparent; white-space:pre-wrap; word-break:break-word;
+      background:transparent; cursor:text; user-select:text;
+    }
+    .textbox.sel{ border-color:#6a9bff; box-shadow:0 0 0 2px #cfe0ff inset; background:rgba(255,255,255,.2); }
+    .hint{font-size:.8rem;color:#666;margin-left:auto}
   </style>
 </head>
 <body>
@@ -35,19 +39,20 @@
   <div class="toolbar">
     <label>太さ <input id="size" type="range" min="1" max="30" value="4"></label>
     <label>色 <input id="color" type="color" value="#111111"></label>
-
-    <!-- 🎨 色パレット -->
     <div class="palette" id="palette">
-      <button data-color="#000000" style="background:#000000" aria-label="黒"></button>
-      <button data-color="#ff0000" style="background:#ff0000" aria-label="赤"></button>
-      <button data-color="#0000ff" style="background:#0000ff" aria-label="青"></button>
-      <button data-color="#008000" style="background:#008000" aria-label="緑"></button>
-      <button data-color="#ffa500" style="background:#ffa500" aria-label="橙"></button>
-      <button data-color="#ffff00" style="background:#ffff00" aria-label="黄"></button>
+      <button data-color="#000000" style="background:#000000" aria-label="黒 (1)"></button>
+      <button data-color="#ff0000" style="background:#ff0000" aria-label="赤 (2)"></button>
+      <button data-color="#0000ff" style="background:#0000ff" aria-label="青 (3)"></button>
+      <button data-color="#008000" style="background:#008000" aria-label="緑 (4)"></button>
+      <button data-color="#ffa500" style="background:#ffa500" aria-label="橙 (5)"></button>
+      <button data-color="#ffff00" style="background:#ffff00" aria-label="黄 (6)"></button>
     </div>
 
-    <button id="penBtn" class="tool-btn" aria-pressed="true">✒️ペン</button>
-    <button id="eraserBtn" class="tool-btn" aria-pressed="false">🧽消しゴム</button>
+    <button id="penBtn" class="tool-btn" aria-pressed="true">✒️ペン (P)</button>
+    <button id="eraserBtn" class="tool-btn" aria-pressed="false">🧽消しゴム (E)</button>
+    <button id="textBtn" class="tool-btn" aria-pressed="false">T テキスト (T)</button>
+    <label>文字サイズ <input id="fontSize" type="number" min="10" max="96" step="1" value="18" style="width:4.5rem"></label>
+
     <label><input type="checkbox" id="penOnly">ペンのみ</label>
     <button id="undoBtn">↶Undo</button>
     <button id="redoBtn">↷Redo</button>
@@ -57,11 +62,15 @@
     <span id="pageInfo">-/-</span>
     <button id="nextPage">▶</button>
     <button id="savePNGBtn">PNG保存</button>
+
+    <span class="hint">⌘/Ctrl+Z:Undo, ⌘/Ctrl+Y/Shift+Z:Redo, P/E/T, [ ] , 1-6, ←/→, ⌘/Ctrl+S</span>
   </div>
 
   <div id="stageWrap">
     <canvas id="pdfLayer"></canvas>
     <canvas id="inkLayer"></canvas>
+    <!-- テキスト用のレイヤ（絶対配置のdivを載せる） -->
+    <div id="textLayer" style="position:absolute; inset:0;"></div>
   </div>
 </div>
 
@@ -71,6 +80,7 @@
 
   const pdfCanvas=document.getElementById('pdfLayer'),
         inkCanvas=document.getElementById('inkLayer'),
+        textLayer=document.getElementById('textLayer'),
         pdfCtx=pdfCanvas.getContext('2d'),
         inkCtx=inkCanvas.getContext('2d'),
         dpr=window.devicePixelRatio||1;
@@ -78,8 +88,10 @@
   const ui={
     size:document.getElementById('size'),
     color:document.getElementById('color'),
+    fontSize:document.getElementById('fontSize'),
     penBtn:document.getElementById('penBtn'),
     eraserBtn:document.getElementById('eraserBtn'),
+    textBtn:document.getElementById('textBtn'),
     penOnly:document.getElementById('penOnly'),
     undoBtn:document.getElementById('undoBtn'),
     redoBtn:document.getElementById('redoBtn'),
@@ -90,52 +102,58 @@
     info:document.getElementById('pageInfo'),
     savePNGBtn:document.getElementById('savePNGBtn'),
     paletteWrap:document.getElementById('palette'),
+    paletteBtns:document.querySelectorAll('#palette button'),
+    stageWrap:document.getElementById('stageWrap'),
   };
 
   const state={
     tool:'pen', color:ui.color.value, size:+ui.size.value, penOnly:false,
     drawing:false, last:null, stroke:[], history:[], redoStack:[],
-    pdf:null, page:1, totalPages:0
+    pdf:null, page:1, totalPages:0,
+    texts:[], // {el, x, y, fontSize, color, page}
   };
 
   // ------- UI helpers -------
   function setActiveTool(tool){
     state.tool = tool;
-    const isPen = tool==='pen';
-    ui.penBtn.classList.toggle('active', isPen);
-    ui.eraserBtn.classList.toggle('active', !isPen);
-    ui.penBtn.setAttribute('aria-pressed', String(isPen));
-    ui.eraserBtn.setAttribute('aria-pressed', String(!isPen));
+    const map = {pen:ui.penBtn, eraser:ui.eraserBtn, text:ui.textBtn};
+    [ui.penBtn,ui.eraserBtn,ui.textBtn].forEach(b=>{
+      const on = (b===map[tool]);
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
   }
-  // 起動時はペンをアクティブ表示
   setActiveTool('pen');
 
   function setSelectedPalette(color){
     state.color = color;
-    ui.color.value = color; // カラーピッカーも同期
-    // パレットの選択表示
-    for(const btn of ui.paletteWrap.querySelectorAll('button')){
+    ui.color.value = color;
+    for(const btn of ui.paletteBtns){
       btn.classList.toggle('sel', btn.dataset.color?.toLowerCase()===color.toLowerCase());
     }
+    // 選択中テキストの色も更新
+    const sel = document.querySelector('.textbox.sel');
+    if(sel){ sel.style.color = color; sel.dataset.color = color; }
   }
-  // 初期色を反映
   setSelectedPalette(ui.color.value);
 
   // ------- layout -------
   function resize(){
-    const wrap=document.getElementById('stageWrap');
+    const wrap=ui.stageWrap;
     const cssW=wrap.clientWidth,
           cssH=Math.max(360, window.innerHeight - wrap.getBoundingClientRect().top);
     for(const c of [pdfCanvas,inkCanvas]){
       c.width=Math.floor(cssW*dpr); c.height=Math.floor(cssH*dpr);
       c.style.width=cssW+'px'; c.style.height=cssH+'px';
     }
+    textLayer.style.width = cssW+'px';
+    textLayer.style.height = cssH+'px';
     pdfCtx.setTransform(dpr,0,0,dpr,0,0);
     inkCtx.setTransform(dpr,0,0,dpr,0,0);
   }
-  window.addEventListener('resize', ()=>{ resize(); if(state.pdf) drawPDF(); else redrawInk(); });
+  window.addEventListener('resize', ()=>{ resize(); if(state.pdf) drawPDF(); else { redrawInk(); positionTextboxes(); } });
 
-  // ------- draw -------
+  // ------- pen/eraser drawing -------
   function drawLine(ctx,a,b,opt){
     const pressure=b.pres??1, base=opt.size||state.size;
     const w=opt.pressure? base*pressure: base;
@@ -166,11 +184,102 @@
     state.drawing=false; state.history.push({ops:state.stroke}); state.redoStack=[];
   }
 
-  inkCanvas.addEventListener('pointerdown',e=>{ if(state.penOnly&&e.pointerType!=='pen')return; inkCanvas.setPointerCapture(e.pointerId); begin(getPos(e)); });
-  inkCanvas.addEventListener('pointermove',e=>{ if(state.penOnly&&e.pointerType!=='pen')return; if(state.drawing) move(getPos(e)); });
+  // ペン/消しゴムの入力
+  inkCanvas.addEventListener('pointerdown',e=>{
+    if(state.tool!=='pen' && state.tool!=='eraser') return;
+    if(state.penOnly&&e.pointerType!=='pen')return;
+    inkCanvas.setPointerCapture(e.pointerId); begin(getPos(e));
+  });
+  inkCanvas.addEventListener('pointermove',e=>{
+    if(state.tool!=='pen' && state.tool!=='eraser') return;
+    if(state.penOnly&&e.pointerType!=='pen')return;
+    if(state.drawing) move(getPos(e));
+  });
   ['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t,end));
 
-  // ------- history -------
+  // ------- text boxes -------
+  function createTextbox(x,y,opts={}){
+    const el = document.createElement('div');
+    el.className='textbox sel';
+    el.contentEditable = 'true';
+    el.spellcheck = false;
+    el.style.left = x+'px';
+    el.style.top = y+'px';
+    el.style.fontSize = (opts.fontSize || +ui.fontSize.value) + 'px';
+    el.style.color = opts.color || state.color;
+    el.dataset.color = el.style.color;
+    el.dataset.fontSize = parseInt(el.style.fontSize,10);
+    el.dataset.page = String(state.page); // そのページ上のテキストとして紐付け
+
+    el.addEventListener('focus', ()=> selectTextbox(el));
+    el.addEventListener('blur', ()=> el.classList.remove('sel'));
+    el.addEventListener('keydown', (e)=>{
+      // Deleteで空なら削除
+      if((e.key==='Backspace' || e.key==='Delete') && el.textContent===''){
+        e.preventDefault(); removeTextbox(el);
+      }
+    });
+
+    // ドラッグ移動
+    let dragging=false, sx=0, sy=0, startLeft=0, startTop=0;
+    el.addEventListener('pointerdown', (e)=>{
+      dragging=true; el.setPointerCapture(e.pointerId);
+      sx=e.clientX; sy=e.clientY;
+      startLeft=parseFloat(el.style.left)||0; startTop=parseFloat(el.style.top)||0;
+      selectTextbox(el);
+    });
+    el.addEventListener('pointermove', (e)=>{
+      if(!dragging) return;
+      const dx=e.clientX-sx, dy=e.clientY-sy;
+      el.style.left=(startLeft+dx)+'px';
+      el.style.top=(startTop+dy)+'px';
+    });
+    ['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=> el.addEventListener(t, ()=> dragging=false ));
+
+    textLayer.appendChild(el);
+    el.focus();
+    state.texts.push({el});
+    return el;
+  }
+  function selectTextbox(el){
+    document.querySelectorAll('.textbox.sel').forEach(n=> n.classList.remove('sel'));
+    el.classList.add('sel');
+    // 現在の色/サイズUIと同期
+    ui.color.value = el.dataset.color || '#111111';
+    setSelectedPalette(ui.color.value);
+    if(el.dataset.fontSize) ui.fontSize.value = el.dataset.fontSize;
+  }
+  function removeTextbox(el){
+    const idx = state.texts.findIndex(t=> t.el===el);
+    if(idx>=0) state.texts.splice(idx,1);
+    el.remove();
+  }
+  function positionTextboxes(){
+    // PDFのスケールが変わった時に再配置したい場合はここで対応
+    // 今回は画面幅フィットなので、キャンバスとtextLayerは同じCSSサイズにしており、不要。
+  }
+
+  // テキストツール時のクリックで新規作成
+  textLayer.addEventListener('pointerdown', (e)=>{
+    if(state.tool!=='text') return;
+    // クリック位置に作成
+    const r = textLayer.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    createTextbox(x, y, { fontSize:+ui.fontSize.value, color:state.color });
+  });
+
+  // UIからの色/サイズ変更で選択中テキストも反映
+  ui.fontSize.addEventListener('input', ()=>{
+    const sel = document.querySelector('.textbox.sel');
+    if(sel){ sel.style.fontSize = (+ui.fontSize.value)+'px'; sel.dataset.fontSize = +ui.fontSize.value; }
+  });
+  ui.color.addEventListener('input', ()=> setSelectedPalette(ui.color.value));
+  ui.paletteWrap.addEventListener('click', (e)=>{
+    const btn = e.target.closest('button[data-color]'); if(!btn) return;
+    setSelectedPalette(btn.dataset.color);
+  });
+
+  // ------- history & redraw -------
   function redrawInk(){
     inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr);
     state.history.forEach(h=>{
@@ -187,49 +296,48 @@
   // ------- PDF -------
   function drawPDF(){
     if(!state.pdf) return;
-    const wrap=document.getElementById('stageWrap');
+    const wrap=ui.stageWrap;
     const targetWidth=Math.max(1, wrap.clientWidth);
     state.pdf.getPage(state.page).then(p=>{
       const v=p.getViewport({scale:1});
       const scale=targetWidth / v.width;
       const vp=p.getViewport({scale});
-      pdfCanvas.width=Math.floor(vp.width*dpr); pdfCanvas.height=Math.floor(vp.height*dpr);
-      inkCanvas.width=Math.floor(vp.width*dpr); inkCanvas.height=Math.floor(vp.height*dpr);
+      // Canvas & TextLayer サイズを合わせる
+      const W=Math.floor(vp.width*dpr), H=Math.floor(vp.height*dpr);
+      pdfCanvas.width=W; pdfCanvas.height=H;
+      inkCanvas.width=W; inkCanvas.height=H;
       pdfCanvas.style.width=vp.width+'px'; pdfCanvas.style.height=vp.height+'px';
       inkCanvas.style.width=vp.width+'px'; inkCanvas.style.height=vp.height+'px';
+      textLayer.style.width=vp.width+'px'; textLayer.style.height=vp.height+'px';
       pdfCtx.setTransform(dpr,0,0,dpr,0,0); inkCtx.setTransform(dpr,0,0,dpr,0,0);
-      p.render({canvasContext:pdfCtx,viewport:vp}).promise.then(()=> redrawInk());
+      p.render({canvasContext:pdfCtx,viewport:vp}).promise.then(()=> { redrawInk(); filterTextForPage(); });
       ui.info.textContent=`${state.page}/${state.totalPages}`;
+    });
+  }
+  function filterTextForPage(){
+    // 表示ページ以外のテキストは隠す
+    const curr = String(state.page);
+    state.texts.forEach(t=>{
+      const el=t.el; el.style.display = (el.dataset.page===curr) ? 'block' : 'none';
     });
   }
 
   // ------- events -------
   ui.size.addEventListener('input', ()=> state.size=+ui.size.value);
-  ui.color.addEventListener('input', ()=> setSelectedPalette(ui.color.value));
-
-  ui.paletteWrap.addEventListener('click', (e)=>{
-    const btn = e.target.closest('button[data-color]');
-    if(!btn) return;
-    setSelectedPalette(btn.dataset.color);
-  });
-
   ui.penOnly.addEventListener('change', e=> state.penOnly=e.target.checked);
   ui.penBtn.onclick = ()=> setActiveTool('pen');
   ui.eraserBtn.onclick = ()=> setActiveTool('eraser');
-
-  // キーボードでも切替（p = ペン / e = 消しゴム）
-  window.addEventListener('keydown', (e)=>{
-    if(e.key.toLowerCase()==='p') setActiveTool('pen');
-    if(e.key.toLowerCase()==='e') setActiveTool('eraser');
-  });
-
+  ui.textBtn.onclick = ()=> setActiveTool('text');
   ui.undoBtn.onclick=undo;
   ui.redoBtn.onclick=redo;
 
   ui.clearBtn.onclick=()=>{
-    if(confirm('手書きの内容をすべて消去します。よろしいですか？')){
+    if(confirm('手書きの内容とテキストをすべて消去します。よろしいですか？')){
       state.history=[]; state.redoStack=[];
       inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr);
+      // テキストも削除
+      state.texts.forEach(t=> t.el.remove());
+      state.texts=[];
       if(state.pdf) drawPDF();
     }
   };
@@ -247,11 +355,79 @@
   ui.prev.onclick=()=>{ if(state.pdf && state.page>1){ state.page--; drawPDF(); } };
   ui.next.onclick=()=>{ if(state.pdf && state.page<state.totalPages){ state.page++; drawPDF(); } };
 
-  ui.savePNGBtn.onclick=()=>{
-    const out=document.createElement('canvas'); out.width=pdfCanvas.width; out.height=pdfCanvas.height;
-    const o=out.getContext('2d'); o.drawImage(pdfCanvas,0,0); o.drawImage(inkCanvas,0,0);
-    const a=document.createElement('a'); a.href=out.toDataURL('image/png'); a.download='note.png'; a.click();
-  };
+  function savePNG(){
+    // PDF + 手書き + テキストを合成
+    const out=document.createElement('canvas');
+    out.width=pdfCanvas.width; out.height=pdfCanvas.height;
+    const o=out.getContext('2d');
+    o.drawImage(pdfCanvas,0,0);
+    o.drawImage(inkCanvas,0,0);
+
+    // このページのテキストだけ描画
+    const curr = String(state.page);
+    const cssW = parseFloat(getComputedStyle(textLayer).width);
+    const cssH = parseFloat(getComputedStyle(textLayer).height);
+    const scaleX = pdfCanvas.width / cssW;
+    const scaleY = pdfCanvas.height / cssH;
+
+    document.querySelectorAll('.textbox').forEach(el=>{
+      if(el.dataset.page!==curr) return;
+      const x = parseFloat(el.style.left)||0;
+      const y = parseFloat(el.style.top)||0;
+      const color = el.dataset.color || '#111';
+      const fontSize = parseInt(el.dataset.fontSize||'18',10);
+      const text = el.innerText.replace(/\r/g,''); // 改行維持
+
+      o.fillStyle = color;
+      o.textBaseline = 'top';
+      o.font = `${Math.round(fontSize*dpr)}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Noto Sans JP", sans-serif`;
+      // 複数行対応
+      const lines = text.split('\n');
+      const lineHeight = Math.round(fontSize*1.3*dpr);
+      for(let i=0;i<lines.length;i++){
+        o.fillText(lines[i], Math.round(x*scaleX), Math.round((y*scaleY)+ i*lineHeight));
+      }
+    });
+
+    const a=document.createElement('a');
+    a.href=out.toDataURL('image/png'); a.download=`note_page${state.page}.png`; a.click();
+  }
+  ui.savePNGBtn.onclick=savePNG;
+
+  function isEditableTarget(t){ return t && (t.tagName==='INPUT' || t.tagName==='TEXTAREA' || t.isContentEditable); }
+  window.addEventListener('keydown', (e)=>{
+    const k = e.key.toLowerCase();
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    const meta = isMac ? e.metaKey : e.ctrlKey;
+
+    // 編集中のテキスト/入力ではショートカット無効
+    if(isEditableTarget(e.target)){
+      // Cmd/Ctrl+Enter でテキストの選択解除（便利機能）
+      if(meta && e.key==='Enter'){ e.preventDefault(); (e.target as HTMLElement)?.blur?.(); }
+      return;
+    }
+
+    if(meta && k==='z' && !e.shiftKey){ e.preventDefault(); undo(); return; }
+    if((meta && (k==='y' || (k==='z' && e.shiftKey)))){ e.preventDefault(); redo(); return; }
+    if(meta && k==='s'){ e.preventDefault(); savePNG(); return; }
+
+    if(k==='p'){ setActiveTool('pen'); return; }
+    if(k==='e'){ setActiveTool('eraser'); return; }
+    if(k==='t'){ setActiveTool('text'); return; }
+
+    if(e.key==='['){ e.preventDefault(); ui.size.value = Math.max(+ui.size.min, +ui.size.value-1); ui.size.dispatchEvent(new Event('input')); return; }
+    if(e.key===']'){ e.preventDefault(); ui.size.value = Math.min(+ui.size.max, +ui.size.value+1); ui.size.dispatchEvent(new Event('input')); return; }
+
+    if('123456'.includes(e.key)){
+      const idx = Number(e.key)-1;
+      const btn = ui.paletteBtns[idx];
+      if(btn){ setSelectedPalette(btn.dataset.color); }
+      return;
+    }
+
+    if(e.key==='ArrowLeft'){ e.preventDefault(); if(state.pdf && state.page>1){ state.page--; drawPDF(); } return; }
+    if(e.key==='ArrowRight'){ e.preventDefault(); if(state.pdf && state.page<state.totalPages){ state.page++; drawPDF(); } return; }
+  });
 
   window.addEventListener('load', ()=>{ resize(); });
 </script>
