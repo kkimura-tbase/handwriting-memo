@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>手書きメモ（PDF注釈 / ESM 版）</title>
+  <style>
+    html,body{height:100%;margin:0;font-family:system-ui}
+    .app{display:grid;grid-template-rows:auto 1fr;height:100%}
+    .toolbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;
+             padding:.6rem;background:#f6f6f6;border-bottom:1px solid #ddd}
+    .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
+    #stageWrap{position:relative;height:100%;min-height:360px;background:#fff}
+    canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
+    #toast{position:fixed;left:12px;bottom:12px;background:#111;color:#fff;padding:8px 10px;border-radius:8px;display:none;z-index:9999}
+  </style>
+</head>
+<body>
+<div class="app">
+  <div class="toolbar">
+    <label>太さ <input id="size" type="range" min="1" max="30" value="4"></label>
+    <label>色 <input id="color" type="color" value="#111111"></label>
+    <button id="penBtn">✒️ペン</button>
+    <button id="eraserBtn">🧽消しゴム</button>
+    <label><input type="checkbox" id="penOnly">ペンのみ</label>
+    <button id="undoBtn">↶Undo</button>
+    <button id="redoBtn">↷Redo</button>
+    <input type="file" id="pdfInput" accept="application/pdf">
+    <button id="prevPage">◀</button><span id="pageInfo">-/-</span><button id="nextPage">▶</button>
+    <button id="savePNGBtn">PNG保存</button>
+  </div>
+  <div id="stageWrap">
+    <canvas id="pdfLayer"></canvas>
+    <canvas id="inkLayer"></canvas>
+  </div>
+</div>
+<div id="toast"></div>
+
+<!-- ★ ここから ESM（モジュール）版で読み込みます -->
+<script type="module">
+  // ↓ pdf.mjs / pdf.worker.mjs がある場所（今回の構成なら "build/"）
+  const PDFJS_PATH = './build/';
+
+  // PDF.js を ES Modules として読み込み
+  import * as pdfjsLib from `${PDFJS_PATH}pdf.mjs`;
+  // Worker も ES Modules 版を使う
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_PATH}pdf.worker.mjs`;
+
+  // --- 以降、アプリ本体 ---
+  const pdfCanvas = document.getElementById('pdfLayer'),
+        inkCanvas = document.getElementById('inkLayer'),
+        pdfCtx = pdfCanvas.getContext('2d'),
+        inkCtx = inkCanvas.getContext('2d'),
+        dpr = window.devicePixelRatio || 1;
+
+  const ui = {
+    size:document.getElementById('size'),
+    color:document.getElementById('color'),
+    penBtn:document.getElementById('penBtn'),
+    eraserBtn:document.getElementById('eraserBtn'),
+    penOnly:document.getElementById('penOnly'),
+    undoBtn:document.getElementById('undoBtn'),
+    redoBtn:document.getElementById('redoBtn'),
+    pdfInput:document.getElementById('pdfInput'),
+    prev:document.getElementById('prevPage'),
+    next:document.getElementById('nextPage'),
+    info:document.getElementById('pageInfo'),
+    savePNG:document.getElementById('savePNGBtn')
+  };
+
+  const state = {
+    tool:'pen', color:'#111', size:4, penOnly:false,
+    drawing:false, last:null, stroke:[], history:[], redoStack:[],
+    pdf:null, page:1, totalPages:0
+  };
+
+  const toast=(m)=>{const t=document.getElementById('toast'); t.textContent=m; t.style.display='block'; clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display='none', 3500);};
+
+  function resize(){
+    const wrap=document.getElementById('stageWrap');
+    const cssW=wrap.clientWidth, cssH=Math.max(360, window.innerHeight - wrap.getBoundingClientRect().top);
+    for(const c of [pdfCanvas,inkCanvas]){
+      c.width=Math.floor(cssW*dpr); c.height=Math.floor(cssH*dpr);
+      c.style.width=cssW+'px'; c.style.height=cssH+'px';
+    }
+    pdfCtx.setTransform(dpr,0,0,dpr,0,0);
+    inkCtx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  window.addEventListener('resize',()=>{ resize(); if(state.pdf) drawPDF(); else redrawInk(); });
+
+  // --- 破線対策：距離ベース補間 ---
+  function drawLine(ctx,a,b,opt){
+    const pressure=b.pres??1, base=opt.size||state.size;
+    const w=opt.pressure? base*pressure: base;
+    const dx=b.x-a.x, dy=b.y-a.y, dist=Math.hypot(dx,dy);
+    const STEP=2, steps=Math.max(1, Math.ceil(dist/STEP));
+    ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle=opt.color||state.color; ctx.lineWidth=w;
+    ctx.beginPath(); ctx.moveTo(a.x,a.y);
+    for(let i=1;i<=steps;i++){ const t=i/steps; ctx.lineTo(a.x+dx*t, a.y+dy*t); }
+    ctx.stroke();
+  }
+  function eraseLine(ctx,a,b,esize){
+    ctx.save(); ctx.globalCompositeOperation='destination-out';
+    drawLine(ctx,a,b,{color:'#000',size:esize||state.size*2,pressure:true});
+    ctx.restore();
+  }
+  function getPos(e){ const r=inkCanvas.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top,pres:e.pressure>0?e.pressure:1}; }
+  function begin(p){ state.drawing=true; state.last=p; state.stroke=[{p,tool:state.tool,color:state.color,size:state.size}]; }
+  function move(p){
+    if(!state.drawing) return;
+    const a=state.last,b=p;
+    if(state.tool==='pen') drawLine(inkCtx,a,b,{pressure:true});
+    else eraseLine(inkCtx,a,b);
+    state.stroke.push({p,tool:state.tool,color:state.color,size:state.size});
+    state.last=b;
+  }
+  function end(){
+    if(!state.drawing) return;
+    state.drawing=false; state.history.push({ops:state.stroke}); state.redoStack=[];
+  }
+  inkCanvas.addEventListener('pointerdown',e=>{ if(state.penOnly&&e.pointerType!=='pen')return; inkCanvas.setPointerCapture(e.pointerId); begin(getPos(e)); });
+  inkCanvas.addEventListener('pointermove',e=>{ if(state.penOnly&&e.pointerType!=='pen')return; if(state.drawing) move(getPos(e)); });
+  ['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t,end));
+
+  ui.undoBtn.onclick=()=>{ if(state.history.length){ state.redoStack.push(state.history.pop()); redrawInk(); } };
+  ui.redoBtn.onclick=()=>{ if(state.redoStack.length){ state.history.push(state.redoStack.pop()); redrawInk(); } };
+
+  ui.size.oninput=()=> state.size=+ui.size.value;
+  ui.color.oninput=()=> state.color=ui.color.value;
+  ui.penBtn.onclick=()=> state.tool='pen';
+  ui.eraserBtn.onclick=()=> state.tool='eraser';
+  ui.pdfInput.onchange = async e=>{
+    const f=e.target.files?.[0]; if(!f){ toast('未選択'); return; }
+    try{
+      const buf=await f.arrayBuffer();
+      state.pdf=await pdfjsLib.getDocument({data:buf}).promise;
+      state.totalPages=state.pdf.numPages; state.page=1;
+      drawPDF(); toast('PDF読込OK：'+state.totalPages+'ページ');
+    }catch(err){ console.error(err); toast('読込失敗：'+(err.message||err)); }
+  };
+  ui.prev.onclick=()=>{ if(state.pdf && state.page>1){ state.page--; drawPDF(); } };
+  ui.next.onclick=()=>{ if(state.pdf && state.page<state.totalPages){ state.page++; drawPDF(); } };
+  ui.savePNGBtn.onclick=()=>{
+    const out=document.createElement('canvas'); out.width=pdfCanvas.width; out.height=pdfCanvas.height;
+    const o=out.getContext('2d'); o.drawImage(pdfCanvas,0,0); o.drawImage(inkCanvas,0,0);
+    const a=document.createElement('a'); a.href=out.toDataURL('image/png'); a.download='note.png'; a.click();
+  };
+
+  function drawPDF(){
+    if(!state.pdf) return;
+    const wrap=document.getElementById('stageWrap');
+    const targetWidth=Math.max(1, wrap.clientWidth);
+    state.pdf.getPage(state.page).then(p=>{
+      const v=p.getViewport({scale:1});
+      const scale=targetWidth / v.width;
+      const vp=p.getViewport({scale});
+      pdfCanvas.width=Math.floor(vp.width*dpr); pdfCanvas.height=Math.floor(vp.height*dpr);
+      inkCanvas.width=Math.floor(vp.width*dpr); inkCanvas.height=Math.floor(vp.height*dpr);
+      pdfCanvas.style.width=vp.width+'px'; pdfCanvas.style.height=vp.height+'px';
+      inkCanvas.style.width=vp.width+'px'; inkCanvas.style.height=vp.height+'px';
+      pdfCtx.setTransform(dpr,0,0,dpr,0,0); inkCtx.setTransform(dpr,0,0,dpr,0,0);
+      p.render({canvasContext:pdfCtx,viewport:vp}).promise.then(()=> redrawInk());
+      ui.info.textContent=`${state.page}/${state.totalPages}`;
+    });
+  }
+  function redrawInk(){
+    inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr);
+    state.history.forEach(h=>{
+      for(let i=1;i<h.ops.length;i++){
+        const A=h.ops[i-1],B=h.ops[i];
+        if(B.tool==='pen') drawLine(inkCtx,A.p,B.p,{color:A.color,size:A.size});
+        else eraseLine(inkCtx,A.p,B.p,(A.size||state.size)*2);
+      }
+    });
+  }
+
+  // 初期化
+  window.addEventListener('load', ()=>{ resize(); });
+</script>
+</body>
+</html>
