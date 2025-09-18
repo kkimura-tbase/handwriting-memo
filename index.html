@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>手書きメモ（PDF注釈/テキスト/ズーム対応 完全版）</title>
+  <title>手書きメモ（PDF注釈/テキスト/ズーム＋白紙対応）</title>
   <link rel="icon" href="data:,">
   <style>
     html,body{height:100%;margin:0;font-family:system-ui}
@@ -13,7 +13,6 @@
     .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
     #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto}
     canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
-    /* レイヤー順：PDF < Ink < Text */
     #pdfLayer{z-index:0}
     #inkLayer{z-index:1}
     #textLayer{z-index:2; position:absolute; inset:0}
@@ -66,13 +65,12 @@
     <span id="pageInfo">-/-</span>
     <button id="nextPage">▶</button>
 
-    <!-- スクロールボタン -->
     <button id="scrollUp">▲</button>
     <button id="scrollDown">▼</button>
 
     <button id="savePNGBtn">PNG保存</button>
 
-    <span class="hint">ピンチでズーム（中心維持） / ダブルタップで100% / ▲▼スクロール / ⌘/Ctrl+Z など</span>
+    <span class="hint">ピンチでズーム（中心維持） / ダブルタップで100% / ▲▼スクロール</span>
   </div>
 
   <div id="stageWrap">
@@ -143,7 +141,6 @@
     texts:[]             // {el,x,y,fontSize,color,page}
   };
 
-  // --- ツール切替とレイヤのpointer-events ---
   function setActiveTool(tool){
     state.tool = tool;
     const map = {pen:ui.penBtn, eraser:ui.eraserBtn, text:ui.textBtn};
@@ -165,30 +162,70 @@
   }
   setSelectedPalette(toHexColor(ui.color.value));
 
-  // --- PDF描画（scale対応） ---
-  async function drawPDF(){
-    if(!state.pdf) return;
-    const page=await state.pdf.getPage(state.page);
-    const v1=page.getViewport({scale:1});
-    if(!state.baseWidth||!state.baseHeight){ state.baseWidth=v1.width; state.baseHeight=v1.height; }
-    const v=page.getViewport({scale:state.scale});
-    // 実ピクセル
-    pdfCanvas.width=v.width*dpr; pdfCanvas.height=v.height*dpr;
-    inkCanvas.width=v.width*dpr; inkCanvas.height=v.height*dpr;
-    // CSSサイズ
-    pdfCanvas.style.width=v.width+'px'; pdfCanvas.style.height=v.height+'px';
-    inkCanvas.style.width=v.width+'px'; inkCanvas.style.height=v.height+'px';
-    textLayer.style.width=v.width+'px'; textLayer.style.height=v.height+'px';
-    // dpr変換
-    pdfCtx.setTransform(dpr,0,0,dpr,0,0);
-    await page.render({canvasContext:pdfCtx,viewport:v}).promise;
-    // Ink & Text 再適用
-    redrawInk();
-    layoutTextboxes();
-    ui.info.textContent=`${state.page}/${state.totalPages}`;
+  // --- 基準サイズ（PDFがなくても白紙A4を作る） ---
+  function ensureBaseSize(){
+    if(state.baseWidth && state.baseHeight) return;
+    // A4比率（縦）：1:1.414 を画面幅基準で作る
+    const cssW = Math.max(600, stageWrap.clientWidth || 800);
+    const cssH = Math.round(cssW * 1.41421356);
+    state.baseWidth = cssW; state.baseHeight = cssH;
   }
 
-  // --- Ink（論理座標で保持→描画時にscaleを掛ける） ---
+  // --- 共通描画：PDFがあればPDF、無ければ白紙 ---
+  async function drawPage(){
+    ensureBaseSize();
+
+    let width = state.baseWidth * state.scale;
+    let height = state.baseHeight * state.scale;
+
+    // 実ピクセル
+    pdfCanvas.width = Math.round(width*dpr);
+    pdfCanvas.height= Math.round(height*dpr);
+    inkCanvas.width = pdfCanvas.width;
+    inkCanvas.height= pdfCanvas.height;
+
+    // CSSサイズ
+    pdfCanvas.style.width = width+'px'; pdfCanvas.style.height=height+'px';
+    inkCanvas.style.width = width+'px'; inkCanvas.style.height=height+'px';
+    textLayer.style.width = width+'px'; textLayer.style.height=height+'px';
+
+    // PDF or 白紙
+    pdfCtx.setTransform(dpr,0,0,dpr,0,0);
+    if(state.pdf){
+      const page = await state.pdf.getPage(state.page);
+      // baseWidth/baseHeight はPDFの1.0スケールに合わせて更新
+      const v1 = page.getViewport({scale:1});
+      state.baseWidth = v1.width; state.baseHeight = v1.height;
+      width = state.baseWidth * state.scale;
+      height= state.baseHeight * state.scale;
+      // キャンバスを再設定（念のため）
+      pdfCanvas.width=Math.round(width*dpr); pdfCanvas.height=Math.round(height*dpr);
+      inkCanvas.width=pdfCanvas.width; inkCanvas.height=pdfCanvas.height;
+      pdfCanvas.style.width=width+'px'; pdfCanvas.style.height=height+'px';
+      inkCanvas.style.width=width+'px'; inkCanvas.style.height=height+'px';
+      textLayer.style.width=width+'px'; textLayer.style.height=height+'px';
+      pdfCtx.setTransform(dpr,0,0,dpr,0,0);
+
+      const v = page.getViewport({scale:state.scale});
+      await page.render({canvasContext:pdfCtx,viewport:v}).promise;
+      ui.info.textContent=`${state.page}/${state.totalPages}`;
+    }else{
+      // 白紙を描く
+      pdfCtx.fillStyle='#ffffff';
+      pdfCtx.fillRect(0,0,pdfCanvas.width/dpr,pdfCanvas.height/dpr);
+      // うっすら枠
+      pdfCtx.strokeStyle='#e0e0e0';
+      pdfCtx.lineWidth=1;
+      pdfCtx.strokeRect(0.5,0.5,(pdfCanvas.width/dpr)-1,(pdfCanvas.height/dpr)-1);
+      ui.info.textContent='—/—';
+    }
+
+    // Inkとテキストを再配置
+    redrawInk();
+    layoutTextboxes();
+  }
+
+  // --- Ink（論理座標保持→scaleで描画） ---
   function drawLine(ctx,a,b,opt){
     const pressure=b.pres??1, base=opt.size||state.size;
     const w=opt.pressure? base*pressure: base;
@@ -231,11 +268,13 @@
 
   // --- テキスト ---
   function layoutTextboxes(){
-    const curr=String(state.page);
+    const curr=String(state.pdf ? state.page : 1); // 白紙時は「1ページ扱い」
     for(const t of state.texts){
       const {el,page,fontSize,color,x,y}=t;
-      el.style.display = (String(page)===curr) ? 'block' : 'none';
-      if(String(page)!==curr) continue;
+      // 白紙時は page=1 として扱う
+      const onThisPage = String(page||1)===curr;
+      el.style.display = onThisPage ? 'block' : 'none';
+      if(!onThisPage) continue;
       el.style.left = (x*state.scale)+'px';
       el.style.top  = (y*state.scale)+'px';
       el.style.fontSize = (fontSize*state.scale)+'px';
@@ -246,10 +285,11 @@
     const lx=xCss/state.scale, ly=yCss/state.scale;
     const el=document.createElement('div'); el.className='textbox sel'; el.contentEditable='true'; el.spellcheck=false;
     const color=toHexColor(opts.color||state.color); const fontSize=(opts.fontSize||+ui.fontSize.value);
-    const item={el,x:lx,y:ly,fontSize,color,page:state.page}; state.texts.push(item);
+    const pageIndex = state.pdf ? state.page : 1;
+    const item={el,x:lx,y:ly,fontSize,color,page:pageIndex}; state.texts.push(item);
     el.style.left=(lx*state.scale)+'px'; el.style.top=(ly*state.scale)+'px';
     el.style.fontSize=(fontSize*state.scale)+'px'; el.style.color=color;
-    el.dataset.color=color; el.dataset.fontSize=String(fontSize); el.dataset.page=String(state.page);
+    el.dataset.color=color; el.dataset.fontSize=String(fontSize); el.dataset.page=String(pageIndex);
 
     el.addEventListener('focus', ()=> selectTextbox(item));
     el.addEventListener('blur',  ()=> el.classList.remove('sel'));
@@ -306,26 +346,23 @@
     }
   };
 
-  // PDF読み込み
   ui.pdfInput.onchange=async e=>{
     const f=e.target.files?.[0]; if(!f) return;
     try{
       const buf=await f.arrayBuffer();
       state.pdf=await pdfjsLib.getDocument({data:buf}).promise;
       state.totalPages=state.pdf.numPages; state.page=1;
-      state.scale=1; state.baseWidth=0; state.baseHeight=0;
-      await drawPDF();
+      // スケールとスクロールは維持（baseWidth/HeightはPDFで上書き）
+      await drawPage();
     }catch(err){ console.error(err); alert('PDF読み込み失敗: '+(err.message||err)); }
   };
 
-  ui.prev.onclick=()=>{ if(state.pdf && state.page>1){ state.page--; drawPDF(); } };
-  ui.next.onclick=()=>{ if(state.pdf && state.page<state.totalPages){ state.page++; drawPDF(); } };
+  ui.prev.onclick=()=>{ if(state.pdf && state.page>1){ state.page--; drawPage(); } };
+  ui.next.onclick=()=>{ if(state.pdf && state.page<state.totalPages){ state.page++; drawPage(); } };
 
-  // スクロールボタン
   ui.scrollUp.onclick = ()=> stageWrap.scrollBy({top:-200,behavior:'smooth'});
   ui.scrollDown.onclick=()=> stageWrap.scrollBy({top:200,behavior:'smooth'});
 
-  // テキスト作成（テキストツール時のみ）
   textLayer.addEventListener('pointerdown',(e)=>{
     if(state.tool!=='text') return;
     const r=textLayer.getBoundingClientRect();
@@ -333,7 +370,6 @@
     createTextbox(x,y,{fontSize:+ui.fontSize.value, color:state.color});
   });
 
-  // Ink 入力
   inkCanvas.addEventListener('pointerdown',e=>{
     if(state.tool!=='pen' && state.tool!=='eraser') return;
     if(state.penOnly && e.pointerType!=='pen') return;
@@ -346,13 +382,13 @@
   });
   ['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t,end));
 
-  // PNG保存（現在スケールのまま高解像で書き出し）
+  // PNG保存
   function savePNG(){
     const out=document.createElement('canvas'); out.width=pdfCanvas.width; out.height=pdfCanvas.height;
     const o=out.getContext('2d'); o.drawImage(pdfCanvas,0,0); o.drawImage(inkCanvas,0,0);
-    const curr=String(state.page); o.textBaseline='top';
+    const curr=String(state.pdf ? state.page : 1); o.textBaseline='top';
     for(const t of state.texts){
-      if(String(t.page)!==curr) continue;
+      if(String(t.page||1)!==curr) continue;
       const x=t.x*state.scale*dpr, y=t.y*state.scale*dpr, fontPx=Math.round(t.fontSize*state.scale*dpr);
       o.fillStyle=t.color;
       o.font=`${fontPx}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Noto Sans JP", sans-serif`;
@@ -360,11 +396,11 @@
       const lineHeight=Math.round(t.fontSize*1.3*state.scale*dpr);
       for(let i=0;i<lines.length;i++){ o.fillText(lines[i], x, y+i*lineHeight); }
     }
-    const a=document.createElement('a'); a.href=out.toDataURL('image/png'); a.download=`note_page${state.page}.png`; a.click();
+    const a=document.createElement('a'); a.href=out.toDataURL('image/png'); a.download=`note_page${state.pdf?state.page:1}.png`; a.click();
   }
   ui.savePNGBtn.onclick=savePNG;
 
-  // --- キーボード（簡易） ---
+  // キーボード（簡易）
   function isEditableTarget(t){ return t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable); }
   window.addEventListener('keydown',(e)=>{
     const k=e.key.toLowerCase(); const isMac=navigator.platform.toUpperCase().includes('MAC'); const meta=isMac?e.metaKey:e.ctrlKey;
@@ -378,7 +414,7 @@
     if(e.key===']'){ e.preventDefault(); ui.size.value=Math.min(+ui.size.max,+ui.size.value+1); state.size=+ui.size.value; return; }
   });
 
-  // --- ピンチズーム（中心基準でパン維持） & ダブルタップ100% ---
+  // ピンチズーム（中心維持） & ダブルタップ100%
   let pinchDist=0, lastTap=0;
   function getTouchesCenter(touches){
     return { x:(touches[0].clientX+touches[1].clientX)/2, y:(touches[0].clientY+touches[1].clientY)/2 };
@@ -393,13 +429,9 @@
     } else if(e.touches.length===1){
       const now=Date.now();
       if(now-lastTap<300){
-        // ダブルタップ → 100%
         const oldScale=state.scale;
         state.scale=1;
-        drawPDF().then(()=>{
-          // 左上へ
-          stageWrap.scrollTo({left:0,top:0,behavior:'auto'});
-        });
+        drawPage().then(()=> stageWrap.scrollTo({left:0,top:0,behavior:'auto'}));
       }
       lastTap=now;
     }
@@ -418,13 +450,11 @@
       const oldScale=state.scale;
       const newScale=Math.min(3,Math.max(0.5, oldScale*delta));
       if(newScale!==oldScale){
-        // 中心基準のスクロール補正
         const rect=stageWrap.getBoundingClientRect();
-        const cx = center.x - rect.left + stageWrap.scrollLeft; // 内容座標（旧スケール系）
+        const cx = center.x - rect.left + stageWrap.scrollLeft;
         const cy = center.y - rect.top  + stageWrap.scrollTop;
         state.scale=newScale;
-        drawPDF().then(()=>{
-          // 新スケールで同じ内容点を中心に
+        drawPage().then(()=>{
           const factor=newScale/oldScale;
           const nx = cx*factor - (center.x - rect.left);
           const ny = cy*factor - (center.y - rect.top);
@@ -436,8 +466,9 @@
     }
   },{passive:false});
 
-  // 初期
-  window.addEventListener('load', ()=>{/* PDF未読込なら何もしない */});
+  // 初期：白紙を描く
+  window.addEventListener('load', ()=>{ drawPage(); });
+  window.addEventListener('resize', ()=>{ /* 画面サイズ変化でも白紙/PDFを再描画 */ drawPage(); });
 </script>
 </body>
 </html>
