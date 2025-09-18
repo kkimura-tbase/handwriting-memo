@@ -13,6 +13,10 @@
     .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
     #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto}
     canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
+    /* レイヤーの重なり順を固定 */
+    #pdfLayer{z-index:0}
+    #inkLayer{z-index:1}
+    #textLayer{z-index:2; position:absolute; inset:0}
 
     .tool-btn{transition:.15s ease}
     .tool-btn.active{ background:#e8f0fe;border-color:#6a9bff;box-shadow:0 0 0 2px #cfe0ff inset }
@@ -68,7 +72,7 @@
   <div id="stageWrap">
     <canvas id="pdfLayer"></canvas>
     <canvas id="inkLayer"></canvas>
-    <div id="textLayer" style="position:absolute; inset:0;"></div>
+    <div id="textLayer"></div>
   </div>
 </div>
 
@@ -104,21 +108,15 @@
     stageWrap:document.getElementById('stageWrap'),
   };
 
-  // --- rgb()/rgba()/色名/#rgb を #rrggbb に正規化 ---
+  // --- 色を #rrggbb に正規化 ---
   function toHexColor(input) {
     if (!input) return '#111111';
     let c = String(input).trim().toLowerCase();
-    if (c.startsWith('#')) {
-      if (c.length === 4) { const r=c[1], g=c[2], b=c[3]; return `#${r}${r}${g}${g}${b}${b}`; }
-      return c.slice(0,7);
-    }
-    const m = c.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-    if (m) {
-      const to2 = n=>Math.max(0, Math.min(255, parseInt(n,10))).toString(16).padStart(2,'0');
-      return `#${to2(m[1])}${to2(m[2])}${to2(m[3])}`;
-    }
-    const NAME = { black:'#000000', white:'#ffffff', red:'#ff0000', blue:'#0000ff', green:'#008000', yellow:'#ffff00', orange:'#ffa500', gray:'#808080', grey:'#808080' };
-    return NAME[c] || '#111111';
+    if (c.startsWith('#')) { if (c.length===4){const r=c[1],g=c[2],b=c[3]; return `#${r}${r}${g}${g}${b}${b}`;} return c.slice(0,7); }
+    const m=c.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if(m){const to2=n=>Math.max(0,Math.min(255,parseInt(n,10))).toString(16).padStart(2,'0');return `#${to2(m[1])}${to2(m[2])}${to2(m[3])}`;}
+    const NAME={black:'#000000',white:'#ffffff',red:'#ff0000',blue:'#0000ff',green:'#008000',yellow:'#ffff00',orange:'#ffa500',gray:'#808080',grey:'#808080'};
+    return NAME[c]||'#111111';
   }
 
   const state={
@@ -137,6 +135,8 @@
       b.classList.toggle('active', on);
       b.setAttribute('aria-pressed', String(on));
     });
+    // ★ ペン/消しゴムの時は textLayer をクリック不可に、テキスト時だけ可
+    textLayer.style.pointerEvents = (tool==='text') ? 'auto' : 'none';
   }
   setActiveTool('pen');
 
@@ -212,7 +212,6 @@
   ['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t,end));
 
   // ---- text boxes ----
-  const textLayerEl = document.getElementById('textLayer');
   function createTextbox(x,y,opts={}){
     const el = document.createElement('div');
     el.className='textbox sel';
@@ -222,7 +221,7 @@
     el.style.top = y+'px';
     el.style.fontSize = (opts.fontSize || +ui.fontSize.value) + 'px';
     el.style.color = toHexColor(opts.color || state.color);
-    el.dataset.color = toHexColor(el.style.color);
+    el.dataset.color = el.style.color;
     el.dataset.fontSize = parseInt(el.style.fontSize,10);
     el.dataset.page = String(state.page);
 
@@ -249,38 +248,30 @@
     });
     ['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=> el.addEventListener(t, ()=> dragging=false ));
 
-    textLayerEl.appendChild(el);
+    textLayer.appendChild(el);
     el.focus();
     state.texts.push({el});
     return el;
   }
 
-  // ★ここを修正：常にHEXに正規化してからUIへ反映
   function selectTextbox(el){
     document.querySelectorAll('.textbox.sel').forEach(n=> n.classList.remove('sel'));
     el.classList.add('sel');
-
     const colSrc = el.dataset.color || el.style.color || getComputedStyle(el).color;
     const hex = toHexColor(colSrc);
-
-    el.dataset.color = hex;
-    el.style.color = hex;
-
-    ui.color.value = hex;
-    setSelectedPalette(hex);
-
+    el.dataset.color = hex; el.style.color = hex;
+    ui.color.value = hex; setSelectedPalette(hex);
     if (el.dataset.fontSize) ui.fontSize.value = el.dataset.fontSize;
   }
-
   function removeTextbox(el){
     const idx = state.texts.findIndex(t=> t.el===el);
     if(idx>=0) state.texts.splice(idx,1);
     el.remove();
   }
 
-  textLayerEl.addEventListener('pointerdown', (e)=>{
-    if(state.tool!=='text') return;
-    const r = textLayerEl.getBoundingClientRect();
+  textLayer.addEventListener('pointerdown', (e)=>{
+    if(state.tool!=='text') return;         // テキストツール時のみクリックを処理
+    const r = textLayer.getBoundingClientRect();
     const x = e.clientX - r.left, y = e.clientY - r.top;
     createTextbox(x, y, { fontSize:+ui.fontSize.value, color:state.color });
   });
@@ -289,8 +280,6 @@
     const sel = document.querySelector('.textbox.sel');
     if(sel){ sel.style.fontSize = (+ui.fontSize.value)+'px'; sel.dataset.fontSize = +ui.fontSize.value; }
   });
-
-  // ← カラーピッカーもHEXに正規化してから反映
   ui.color.addEventListener('input', ()=> setSelectedPalette(toHexColor(ui.color.value)));
   ui.paletteWrap.addEventListener('click', (e)=>{
     const btn = e.target.closest('button[data-color]'); if(!btn) return;
@@ -325,7 +314,7 @@
       inkCanvas.width=W; inkCanvas.height=H;
       pdfCanvas.style.width=vp.width+'px'; pdfCanvas.style.height=vp.height+'px';
       inkCanvas.style.width=vp.width+'px'; inkCanvas.style.height=vp.height+'px';
-      textLayerEl.style.width=vp.width+'px'; textLayerEl.style.height=vp.height+'px';
+      textLayer.style.width=vp.width+'px'; textLayer.style.height=vp.height+'px';
       pdfCtx.setTransform(dpr,0,0,dpr,0,0); inkCtx.setTransform(dpr,0,0,dpr,0,0);
       p.render({canvasContext:pdfCtx,viewport:vp}).promise.then(()=> { redrawInk(); filterTextForPage(); });
       ui.info.textContent=`${state.page}/${state.totalPages}`;
@@ -378,8 +367,8 @@
     o.drawImage(inkCanvas,0,0);
 
     const curr = String(state.page);
-    const cssW = parseFloat(getComputedStyle(textLayerEl).width);
-    const cssH = parseFloat(getComputedStyle(textLayerEl).height);
+    const cssW = parseFloat(getComputedStyle(textLayer).width);
+    const cssH = parseFloat(getComputedStyle(textLayer).height);
     const scaleX = pdfCanvas.width / cssW;
     const scaleY = pdfCanvas.height / cssH;
 
