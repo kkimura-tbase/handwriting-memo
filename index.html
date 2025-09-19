@@ -1,78 +1,57 @@
 <!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>手書きメモ（PDF外余白・色修正・ズーム対応）</title>
-  <link rel="icon" href="data:,">
-  <style>
-    html,body{height:100%;margin:0;font-family:system-ui}
-    .app{display:grid;grid-template-rows:auto 1fr;height:100%}
-    .toolbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;
-             padding:.6rem;background:#f6f6f6;border-bottom:1px solid #ddd}
-    .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
-    #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto}
-    canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
-    #pdfLayer{z-index:0}
-    #inkLayer{z-index:1}
-    #textLayer{z-index:2; position:absolute; inset:0; pointer-events:none} /* テキストツール時のみ有効化 */
-
-    .tool-btn{transition:.15s ease}
-    .tool-btn.active{ background:#e8f0fe;border-color:#6a9bff;box-shadow:0 0 0 2px #cfe0ff inset }
-
-    .palette button{
-      width:24px;height:24px;border-radius:50%;padding:0;border:2px solid #ccc;cursor:pointer;
-      display:inline-block; vertical-align:middle;
-    }
-    .palette button.sel{ box-shadow:0 0 0 3px #444 inset; border-color:#222; }
-
-    .textbox{
-      position:absolute; min-width:40px; min-height:24px; padding:2px 4px;
-      outline:none; border:1px dashed transparent; white-space:pre-wrap; word-break:break-word;
-      background:transparent; cursor:text; user-select:text;
-    }
-    .textbox.sel{ border-color:#6a9bff; box-shadow:0 0 0 2px #cfe0ff inset; background:rgba(255,255,255,.2); }
-    .hint{font-size:.8rem;color:#666;margin-left:auto}
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>手書きメモ（ピンチ安定＆PDFチラつき対策）</title>
+<link rel="icon" href="data:,">
+<style>
+  html,body{height:100%;margin:0;font-family:system-ui}
+  .app{display:grid;grid-template-rows:auto 1fr;height:100%}
+  .toolbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;
+           padding:.6rem;background:#f6f6f6;border-bottom:1px solid #ddd}
+  .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
+  #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto}
+  /* ピンチは自前でやるので none */
+  canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
+  #pdfLayer{z-index:0}
+  #inkLayer{z-index:1}
+  #textLayer{z-index:2;position:absolute;inset:0;pointer-events:none}
+  .tool-btn{transition:.15s}
+  .tool-btn.active{background:#e8f0fe;border-color:#6a9bff;box-shadow:0 0 0 2px #cfe0ff inset}
+  .palette button{width:24px;height:24px;border-radius:50%;padding:0;border:2px solid #ccc;cursor:pointer}
+  .palette button.sel{box-shadow:0 0 0 3px #444 inset;border-color:#222}
+  .textbox{position:absolute;min-width:40px;min-height:24px;padding:2px 4px;outline:none;border:1px dashed transparent;
+           white-space:pre-wrap;word-break:break-word;background:transparent;cursor:text;user-select:text}
+  .textbox.sel{border-color:#6a9bff;box-shadow:0 0 0 2px #cfe0ff inset;background:rgba(255,255,255,.2)}
+</style>
 </head>
 <body>
 <div class="app">
   <div class="toolbar">
     <label>太さ <input id="size" type="range" min="1" max="30" value="4"></label>
     <label>色 <input id="color" type="color" value="#111111"></label>
-
     <div class="palette" id="palette">
-      <button data-color="#000000" style="background:#000000" aria-label="黒 (1)"></button>
-      <button data-color="#ff0000" style="background:#ff0000" aria-label="赤 (2)"></button>
-      <button data-color="#0000ff" style="background:#0000ff" aria-label="青 (3)"></button>
-      <button data-color="#008000" style="background:#008000" aria-label="緑 (4)"></button>
-      <button data-color="#ffa500" style="background:#ffa500" aria-label="橙 (5)"></button>
-      <button data-color="#ffff00" style="background:#ffff00" aria-label="黄 (6)"></button>
+      <button data-color="#000000" style="background:#000000"></button>
+      <button data-color="#ff0000" style="background:#ff0000"></button>
+      <button data-color="#0000ff" style="background:#0000ff"></button>
+      <button data-color="#008000" style="background:#008000"></button>
+      <button data-color="#ffa500" style="background:#ffa500"></button>
+      <button data-color="#ffff00" style="background:#ffff00"></button>
     </div>
-
-    <button id="penBtn" class="tool-btn" aria-pressed="true">✒️ペン (P)</button>
-    <button id="eraserBtn" class="tool-btn" aria-pressed="false">🧽消しゴム (E)</button>
-    <button id="textBtn" class="tool-btn" aria-pressed="false">T テキスト (T)</button>
-    <label>文字サイズ <input id="fontSize" type="number" min="10" max="96" step="1" value="18" style="width:4.5rem"></label>
-
+    <button id="penBtn" class="tool-btn" aria-pressed="true">✒️ペン</button>
+    <button id="eraserBtn" class="tool-btn" aria-pressed="false">🧽消しゴム</button>
+    <button id="textBtn" class="tool-btn" aria-pressed="false">T テキスト</button>
+    <label>文字 <input id="fontSize" type="number" min="10" max="96" value="18" style="width:4.5rem"></label>
     <label><input type="checkbox" id="penOnly">ペンのみ</label>
     <button id="undoBtn">↶Undo</button>
     <button id="redoBtn">↷Redo</button>
     <button id="clearBtn">🗑 全消去</button>
     <input type="file" id="pdfInput" accept="application/pdf">
-
-    <button id="prevPage">◀</button>
-    <span id="pageInfo">-/-</span>
-    <button id="nextPage">▶</button>
-
-    <button id="scrollUp">▲</button>
-    <button id="scrollDown">▼</button>
-
+    <button id="prevPage">◀</button><span id="pageInfo">-/-</span><button id="nextPage">▶</button>
+    <button id="scrollUp">▲</button><button id="scrollDown">▼</button>
     <button id="savePNGBtn">PNG保存</button>
-
-    <span class="hint">PDF外の余白にも書けます／ピンチでズーム（中心維持）／ダブルタップで100%</span>
   </div>
-
   <div id="stageWrap">
     <canvas id="pdfLayer"></canvas>
     <canvas id="inkLayer"></canvas>
@@ -81,411 +60,375 @@
 </div>
 
 <script type="module">
-  import * as pdfjsLib from './build/pdf.mjs';
-  pdfjsLib.GlobalWorkerOptions.workerSrc = './build/pdf.worker.mjs';
+import * as pdfjsLib from './build/pdf.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc = './build/pdf.worker.mjs';
 
-  const pdfCanvas=document.getElementById('pdfLayer'),
-        inkCanvas=document.getElementById('inkLayer'),
-        textLayer=document.getElementById('textLayer'),
-        pdfCtx=pdfCanvas.getContext('2d'),
-        inkCtx=inkCanvas.getContext('2d'),
-        dpr=window.devicePixelRatio||1,
-        stageWrap=document.getElementById('stageWrap');
+const dpr = window.devicePixelRatio||1;
+const pdfCanvas = document.getElementById('pdfLayer');
+const inkCanvas = document.getElementById('inkLayer');
+const textLayer = document.getElementById('textLayer');
+const pdfCtx = pdfCanvas.getContext('2d');
+const inkCtx = inkCanvas.getContext('2d');
+const stageWrap = document.getElementById('stageWrap');
 
-  const ui={
-    size:document.getElementById('size'),
-    color:document.getElementById('color'),
-    fontSize:document.getElementById('fontSize'),
-    penBtn:document.getElementById('penBtn'),
-    eraserBtn:document.getElementById('eraserBtn'),
-    textBtn:document.getElementById('textBtn'),
-    penOnly:document.getElementById('penOnly'),
-    undoBtn:document.getElementById('undoBtn'),
-    redoBtn:document.getElementById('redoBtn'),
-    clearBtn:document.getElementById('clearBtn'),
-    pdfInput:document.getElementById('pdfInput'),
-    prev:document.getElementById('prevPage'),
-    next:document.getElementById('nextPage'),
-    info:document.getElementById('pageInfo'),
-    savePNGBtn:document.getElementById('savePNGBtn'),
-    paletteWrap:document.getElementById('palette'),
-    paletteBtns:document.querySelectorAll('#palette button'),
-    scrollUp:document.getElementById('scrollUp'),
-    scrollDown:document.getElementById('scrollDown'),
-  };
+const ui = {
+  size:document.getElementById('size'),
+  color:document.getElementById('color'),
+  fontSize:document.getElementById('fontSize'),
+  penBtn:document.getElementById('penBtn'),
+  eraserBtn:document.getElementById('eraserBtn'),
+  textBtn:document.getElementById('textBtn'),
+  penOnly:document.getElementById('penOnly'),
+  undoBtn:document.getElementById('undoBtn'),
+  redoBtn:document.getElementById('redoBtn'),
+  clearBtn:document.getElementById('clearBtn'),
+  pdfInput:document.getElementById('pdfInput'),
+  prev:document.getElementById('prevPage'),
+  next:document.getElementById('nextPage'),
+  info:document.getElementById('pageInfo'),
+  savePNGBtn:document.getElementById('savePNGBtn'),
+  paletteWrap:document.getElementById('palette'),
+  paletteBtns:document.querySelectorAll('#palette button'),
+  scrollUp:document.getElementById('scrollUp'),
+  scrollDown:document.getElementById('scrollDown'),
+};
 
-  // --- 色を #rrggbb に正規化 ---
-  function toHexColor(input) {
-    if (!input) return '#111111';
-    let c = String(input).trim().toLowerCase();
-    if (c.startsWith('#')) { if (c.length===4){const r=c[1],g=c[2],b=c[3]; return `#${r}${r}${g}${g}${b}${b}`;} return c.slice(0,7); }
-    const m=c.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-    if(m){const to2=n=>Math.max(0,Math.min(255,parseInt(n,10))).toString(16).padStart(2,'0');return `#${to2(m[1])}${to2(m[2])}${to2(m[3])}`;}
-    const NAME={black:'#000000',white:'#ffffff',red:'#ff0000',blue:'#0000ff',green:'#008000',yellow:'#ffff00',orange:'#ffa500',gray:'#808080',grey:'#808080'};
-    return NAME[c]||'#111111';
-  }
+const state = {
+  tool:'pen', color:'#111111', size:+ui.size.value,
+  drawing:false, last:null, stroke:[], history:[], redoStack:[],
+  pdf:null, page:1, totalPages:0,
+  scale:1, baseWidth:0, baseHeight:0,
+  margin:200, pdfOffsetX:0, pdfOffsetY:0,
+  texts:[],
+  // ジェスチャ管理
+  isPinching:false,
+  touches:new Map(),     // pointerId -> {x,y}
+  lastCenter:null, lastDist:0,
+  rafScheduled:false,
+  // PDF描画制御
+  renderTask:null, renderSeq:0
+};
 
-  // --- 状態 ---
-  const state={
-    tool:'pen',
-    color:toHexColor(ui.color.value),
-    size:+ui.size.value,
-    penOnly:false,
-    drawing:false, last:null, stroke:[],
-    history:[], redoStack:[],
-    pdf:null, page:1, totalPages:0,
-    // ズーム関連
-    scale:1,                // 0.5〜3.0
-    baseWidth:0, baseHeight:0, // PDFの論理サイズ（PDFがないときはA4比率）
-    margin:200,             // 論理余白（左右上下）
-    // PDFの描画オフセット（scaleを掛ける前の論理値）
-    pdfOffsetX:0, pdfOffsetY:0,
-    // テキスト（論理座標）
-    texts:[]               // {el,x,y,fontSize,color,page}
-  };
-
-  // --- ツール切替とレイヤのpointer-events ---
-  function setActiveTool(tool){
-    state.tool = tool;
-    const map = {pen:ui.penBtn, eraser:ui.eraserBtn, text:ui.textBtn};
-    [ui.penBtn,ui.eraserBtn,ui.textBtn].forEach(b=>{
-      const on=(b===map[tool]); b.classList.toggle('active',on); b.setAttribute('aria-pressed',String(on));
-    });
-    textLayer.style.pointerEvents = (tool==='text') ? 'auto' : 'none';
-  }
-  setActiveTool('pen');
-
-  // --- カラーパレット（state.colorを常に更新） ---
-  function setSelectedPalette(color){
-    const hex=toHexColor(color);
-    state.color=hex;                 // ← これが重要（描画色に反映）
-    ui.color.value=hex;
-    for(const btn of ui.paletteBtns){
-      btn.classList.toggle('sel', btn.dataset.color?.toLowerCase()===hex.toLowerCase());
-    }
-    // テキスト選択中だけ、そのテキストの色も即同期
-    const sel=document.querySelector('.textbox.sel');
-    if(sel){ sel.style.color=hex; sel.dataset.color=hex; }
-  }
-  ui.color.addEventListener('input', ()=> setSelectedPalette(ui.color.value));
-  ui.paletteWrap.addEventListener('click',(e)=>{
-    const btn=e.target.closest('button[data-color]'); if(!btn) return;
-    setSelectedPalette(btn.dataset.color);
+// ------ helpers ------
+function toHexColor(c){
+  if(!c) return '#111111';
+  c=String(c).trim().toLowerCase();
+  if(c.startsWith('#')){ if(c.length===4){const r=c[1],g=c[2],b=c[3]; return `#${r}${r}${g}${g}${b}${b}`;} return c.slice(0,7); }
+  const m=c.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if(m){ const to2=n=>Math.max(0,Math.min(255,parseInt(n,10))).toString(16).padStart(2,'0'); return `#${to2(m[1])}${to2(m[2])}${to2(m[3])}`; }
+  const NAME={black:'#000000',white:'#ffffff',red:'#ff0000',blue:'#0000ff',green:'#008000',yellow:'#ffff00',orange:'#ffa500',gray:'#808080',grey:'#808080'};
+  return NAME[c]||'#111111';
+}
+function setActiveTool(tool){
+  state.tool=tool;
+  const map={pen:ui.penBtn,eraser:ui.eraserBtn,text:ui.textBtn};
+  [ui.penBtn,ui.eraserBtn,ui.textBtn].forEach(b=>{
+    const on=b===map[tool]; b.classList.toggle('active',on); b.setAttribute('aria-pressed',String(on));
   });
-  setSelectedPalette(toHexColor(ui.color.value));
+  textLayer.style.pointerEvents = (tool==='text')?'auto':'none';
+}
+setActiveTool('pen');
 
-  // --- 基準サイズ（PDFがなくても白紙A4を作る） ---
-  function ensureBaseSize(){
-    if(state.baseWidth && state.baseHeight) return;
-    // A4縦：1:1.414 を基準
-    const cssW = Math.max(600, stageWrap.clientWidth || 800);
-    const cssH = Math.round(cssW * 1.41421356);
-    state.baseWidth = cssW; state.baseHeight = cssH;
+function setSelectedPalette(color){
+  const hex=toHexColor(color);
+  state.color=hex; ui.color.value=hex;
+  for(const b of ui.paletteBtns){ b.classList.toggle('sel', b.dataset.color?.toLowerCase()===hex.toLowerCase()); }
+  const sel=document.querySelector('.textbox.sel'); if(sel){ sel.style.color=hex; sel.dataset.color=hex; }
+}
+setSelectedPalette(ui.color.value);
+
+// ------ layout base ------
+function ensureBaseSize(){
+  if(state.baseWidth && state.baseHeight) return;
+  const cssW=Math.max(600, stageWrap.clientWidth||800);
+  const cssH=Math.round(cssW*1.41421356); // A4縦比
+  state.baseWidth=cssW; state.baseHeight=cssH;
+}
+function contentWidth(){ return state.baseWidth + state.margin*2; }
+function contentHeight(){ return state.baseHeight + state.margin*2; }
+
+// ------ PDF draw with cancellation & throttle ------
+async function drawPage(){
+  ensureBaseSize();
+  // 既存レンダをキャンセル
+  if(state.renderTask){ try{ state.renderTask.cancel(); }catch{} state.renderTask=null; }
+  const seq = ++state.renderSeq;
+
+  // PDFがあれば基準更新
+  if(state.pdf){
+    const page = await state.pdf.getPage(state.page);
+    const v1 = page.getViewport({scale:1});
+    state.baseWidth=v1.width; state.baseHeight=v1.height;
   }
 
-  // 論理コンテンツサイズ（PDF + 余白）
-  function contentWidth(){ return state.baseWidth + state.margin*2; }
-  function contentHeight(){ return state.baseHeight + state.margin*2; }
+  const W = contentWidth()*state.scale, H = contentHeight()*state.scale;
+  pdfCanvas.width=Math.round(W*dpr); pdfCanvas.height=Math.round(H*dpr);
+  inkCanvas.width=pdfCanvas.width;   inkCanvas.height=pdfCanvas.height;
+  pdfCanvas.style.width=W+'px'; pdfCanvas.style.height=H+'px';
+  inkCanvas.style.width=W+'px';   inkCanvas.style.height=H+'px';
+  textLayer.style.width=W+'px';   textLayer.style.height=H+'px';
 
-  // --- 共通描画：PDFがあればPDF（余白内にオフセット描画）、無ければ白紙全面 ---
-  async function drawPage(){
-    ensureBaseSize();
+  pdfCtx.setTransform(dpr,0,0,dpr,0,0);
+  // 背景（余白を含む）
+  pdfCtx.fillStyle='#ffffff';
+  pdfCtx.fillRect(0,0,pdfCanvas.width/dpr,pdfCanvas.height/dpr);
+  pdfCtx.strokeStyle='#e0e0e0'; pdfCtx.lineWidth=1;
+  pdfCtx.strokeRect(0.5,0.5,(pdfCanvas.width/dpr)-1,(pdfCanvas.height/dpr)-1);
 
-    // PDFがある場合はPDFの1.0スケールで基準サイズを更新
-    if(state.pdf){
-      const page = await state.pdf.getPage(state.page);
-      const v1 = page.getViewport({scale:1});
-      state.baseWidth = v1.width; state.baseHeight = v1.height;
-    }
+  if(state.pdf){
+    // PDF描画はオフセット＋renderTask管理
+    const page = await state.pdf.getPage(state.page);
+    const v = page.getViewport({scale:state.scale});
+    const offsetX = state.margin*state.scale;
+    const offsetY = state.margin*state.scale;
+    state.pdfOffsetX = state.margin; state.pdfOffsetY = state.margin;
 
-    const W = contentWidth()  * state.scale;
-    const H = contentHeight() * state.scale;
-
-    // 実ピクセル（×dpr）
-    pdfCanvas.width=Math.round(W*dpr); pdfCanvas.height=Math.round(H*dpr);
-    inkCanvas.width=pdfCanvas.width;   inkCanvas.height=pdfCanvas.height;
-
-    // CSSサイズ
-    pdfCanvas.style.width=W+'px'; pdfCanvas.style.height=H+'px';
-    inkCanvas.style.width=W+'px'; inkCanvas.style.height=H+'px';
-    textLayer.style.width=W+'px'; textLayer.style.height=H+'px';
-
-    // 背景（余白を含む全体）
-    pdfCtx.setTransform(dpr,0,0,dpr,0,0);
-    pdfCtx.fillStyle='#ffffff';
-    pdfCtx.fillRect(0,0,pdfCanvas.width/dpr,pdfCanvas.height/dpr);
-
-    // うっすら外枠
-    pdfCtx.strokeStyle='#e0e0e0'; pdfCtx.lineWidth=1;
-    pdfCtx.strokeRect(0.5,0.5,(pdfCanvas.width/dpr)-1,(pdfCanvas.height/dpr)-1);
-
-    if(state.pdf){
-      // PDFを余白内にオフセットして描画
-      const page = await state.pdf.getPage(state.page);
-      const v = page.getViewport({scale:state.scale});
-      const offsetX = state.margin * state.scale;
-      const offsetY = state.margin * state.scale;
-      state.pdfOffsetX = state.margin; // 論理座標
-      state.pdfOffsetY = state.margin;
-
-      // PDF描画
-      pdfCtx.save();
-      pdfCtx.translate(offsetX, offsetY); // CSSピクセル（dpr前）
-      await page.render({canvasContext:pdfCtx,viewport:v, transform:[1,0,0,1,0,0]}).promise;
-      pdfCtx.restore();
-
-      ui.info.textContent=`${state.page}/${state.totalPages}`;
-    }else{
-      ui.info.textContent='—/—';
-    }
-
-    // Inkとテキストを再配置
-    redrawInk();
-    layoutTextboxes();
-  }
-
-  // --- Ink（論理座標保持→scaleで描画） ---
-  function drawLine(ctx,a,b,opt){
-    const pressure=b.pres??1, base=opt.size||state.size;
-    const w=opt.pressure? base*pressure: base;
-    ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle=opt.color||state.color; ctx.lineWidth=w;
-    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-  }
-  function eraseLine(ctx,a,b,esize){
-    ctx.save(); ctx.globalCompositeOperation='destination-out';
-    drawLine(ctx,a,b,{color:'#000', size:esize||state.size*2, pressure:true});
-    ctx.restore();
-  }
-  const scaled = p => ({x:p.x*state.scale, y:p.y*state.scale, pres:p.pres});
-
-  function getLogicalPos(e){
-    const r=inkCanvas.getBoundingClientRect();
-    return {x:(e.clientX-r.left)/state.scale, y:(e.clientY-r.top)/state.scale, pres:e.pressure>0?e.pressure:1};
-  }
-  function begin(p){ state.drawing=true; state.last=p; state.stroke=[{p,tool:state.tool,color:state.color,size:state.size}]; }
-  function move(p){
-    if(!state.drawing) return;
-    const a=state.last,b=p, As=scaled(a), Bs=scaled(b);
-    if(state.tool==='pen') drawLine(inkCtx,As,Bs,{pressure:true,size:state.size*state.scale,color:state.color});
-    else eraseLine(inkCtx,As,Bs,(state.size*2)*state.scale);
-    state.stroke.push({p,tool:state.tool,color:state.color,size:state.size});
-    state.last=b;
-  }
-  function end(){ if(!state.drawing) return; state.drawing=false; state.history.push({ops:state.stroke}); state.redoStack=[]; }
-
-  function redrawInk(){
-    inkCtx.setTransform(dpr,0,0,dpr,0,0);
-    inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr);
-    for(const h of state.history){
-      for(let i=1;i<h.ops.length;i++){
-        const A=h.ops[i-1],B=h.ops[i]; const a=scaled(A.p), b=scaled(B.p);
-        if(B.tool==='pen') drawLine(inkCtx,a,b,{color:A.color,size:(A.size||state.size)*state.scale});
-        else eraseLine(inkCtx,a,b,((A.size||state.size)*2)*state.scale);
-      }
-    }
-  }
-
-  // --- テキスト（論理座標保持） ---
-  function layoutTextboxes(){
-    const curr=String(state.pdf ? state.page : 1);
-    for(const t of state.texts){
-      const {el,page,fontSize,color,x,y}=t;
-      const onThisPage = String(page||1)===curr;
-      el.style.display = onThisPage ? 'block' : 'none';
-      if(!onThisPage) continue;
-      el.style.left = (x*state.scale)+'px';
-      el.style.top  = (y*state.scale)+'px';
-      el.style.fontSize = (fontSize*state.scale)+'px';
-      el.style.color = color;
-    }
-  }
-  function createTextbox(xCss,yCss,opts={}){
-    const lx=xCss/state.scale, ly=yCss/state.scale;
-    const el=document.createElement('div'); el.className='textbox sel'; el.contentEditable='true'; el.spellcheck=false;
-    const color=toHexColor(opts.color||state.color); const fontSize=(opts.fontSize||+ui.fontSize.value);
-    const pageIndex = state.pdf ? state.page : 1;
-    const item={el,x:lx,y:ly,fontSize,color,page:pageIndex}; state.texts.push(item);
-    el.style.left=(lx*state.scale)+'px'; el.style.top=(ly*state.scale)+'px';
-    el.style.fontSize=(fontSize*state.scale)+'px'; el.style.color=color;
-    el.dataset.color=color; el.dataset.fontSize=String(fontSize); el.dataset.page=String(pageIndex);
-
-    el.addEventListener('focus', ()=> selectTextbox(item));
-    el.addEventListener('blur',  ()=> el.classList.remove('sel'));
-    el.addEventListener('keydown',(e)=>{
-      if((e.key==='Backspace'||e.key==='Delete') && el.textContent===''){ e.preventDefault(); removeTextbox(item); }
-    });
-
-    let dragging=false,sx=0,sy=0;
-    el.addEventListener('pointerdown',(e)=>{ dragging=true; el.setPointerCapture(e.pointerId); sx=e.clientX; sy=e.clientY; selectTextbox(item); });
-    el.addEventListener('pointermove',(e)=>{
-      if(!dragging) return;
-      const dxCss=e.clientX-sx, dyCss=e.clientY-sy;
-      item.x += dxCss/state.scale; item.y += dyCss/state.scale;
-      el.style.left=(item.x*state.scale)+'px'; el.style.top=(item.y*state.scale)+'px';
-      sx=e.clientX; sy=e.clientY;
-    });
-    ['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=> el.addEventListener(t, ()=> dragging=false ));
-    textLayer.appendChild(el); el.focus(); layoutTextboxes(); return item;
-  }
-  function selectTextbox(item){
-    document.querySelectorAll('.textbox.sel').forEach(n=> n.classList.remove('sel'));
-    item.el.classList.add('sel');
-    const hex=toHexColor(item.color||'#111'); ui.color.value=hex; setSelectedPalette(hex);
-    ui.fontSize.value=String(item.fontSize);
-  }
-  function removeTextbox(item){
-    const i=state.texts.indexOf(item); if(i>=0) state.texts.splice(i,1);
-    item.el.remove();
-  }
-
-  // --- UI events ---
-  ui.size.addEventListener('input', ()=> state.size=+ui.size.value);
-  ui.fontSize.addEventListener('input', ()=>{
-    const sel=document.querySelector('.textbox.sel'); if(!sel) return;
-    const item=state.texts.find(t=> t.el===sel); if(!item) return;
-    item.fontSize=+ui.fontSize.value; layoutTextboxes();
-    sel.dataset.fontSize=String(item.fontSize); sel.dataset.color=item.color;
-  });
-
-  ui.penOnly.addEventListener('change', e=> state.penOnly=e.target.checked);
-  ui.penBtn.onclick=()=> setActiveTool('pen');
-  ui.eraserBtn.onclick=()=> setActiveTool('eraser');
-  ui.textBtn.onclick=()=> setActiveTool('text');
-
-  ui.undoBtn.onclick=()=>{ if(state.history.length){ state.redoStack.push(state.history.pop()); redrawInk(); } };
-  ui.redoBtn.onclick=()=>{ if(state.redoStack.length){ state.history.push(state.redoStack.pop()); redrawInk(); } };
-
-  ui.clearBtn.onclick=()=>{
-    if(confirm('手書きとテキストをすべて消去します。よろしいですか？')){
-      state.history=[]; state.redoStack=[];
-      inkCtx.setTransform(dpr,0,0,dpr,0,0); inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr);
-      for(const t of state.texts) t.el.remove(); state.texts=[];
-    }
-  };
-
-  ui.pdfInput.onchange=async e=>{
-    const f=e.target.files?.[0]; if(!f) return;
+    pdfCtx.save();
+    pdfCtx.translate(offsetX, offsetY);
     try{
-      const buf=await f.arrayBuffer();
-      state.pdf=await pdfjsLib.getDocument({data:buf}).promise;
-      state.totalPages=state.pdf.numPages; state.page=1;
-      await drawPage();
-    }catch(err){ console.error(err); alert('PDF読み込み失敗: '+(err.message||err)); }
-  };
-
-  ui.prev.onclick=()=>{ if(state.pdf && state.page>1){ state.page--; drawPage(); } };
-  ui.next.onclick=()=>{ if(state.pdf && state.page<state.totalPages){ state.page++; drawPage(); } };
-
-  ui.scrollUp.onclick = ()=> stageWrap.scrollBy({top:-200,behavior:'smooth'});
-  ui.scrollDown.onclick=()=> stageWrap.scrollBy({top:200,behavior:'smooth'});
-
-  // テキスト作成（テキストツール時のみ）
-  textLayer.addEventListener('pointerdown',(e)=>{
-    if(state.tool!=='text') return;
-    const r=textLayer.getBoundingClientRect();
-    const x=e.clientX-r.left, y=e.clientY-r.top;
-    createTextbox(x,y,{fontSize:+ui.fontSize.value, color:state.color});
-  });
-
-  // Ink 入力
-  inkCanvas.addEventListener('pointerdown',e=>{
-    if(state.tool!=='pen' && state.tool!=='eraser') return;
-    if(state.penOnly && e.pointerType!=='pen') return;
-    inkCanvas.setPointerCapture(e.pointerId); begin(getLogicalPos(e));
-  });
-  inkCanvas.addEventListener('pointermove',e=>{
-    if(state.tool!=='pen' && state.tool!=='eraser') return;
-    if(state.penOnly && e.pointerType!=='pen') return;
-    if(state.drawing) move(getLogicalPos(e));
-  });
-  ['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t,end));
-
-  // PNG保存（余白込みの全キャンバス）
-  function savePNG(){
-    const out=document.createElement('canvas'); out.width=pdfCanvas.width; out.height=pdfCanvas.height;
-    const o=out.getContext('2d'); o.drawImage(pdfCanvas,0,0); o.drawImage(inkCanvas,0,0);
-    const curr=String(state.pdf ? state.page : 1); o.textBaseline='top';
-    for(const t of state.texts){
-      if(String(t.page||1)!==curr) continue;
-      const x=t.x*state.scale*dpr, y=t.y*state.scale*dpr, fontPx=Math.round(t.fontSize*state.scale*dpr);
-      o.fillStyle=t.color;
-      o.font=`${fontPx}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Noto Sans JP", sans-serif`;
-      const lines=(t.el.innerText||'').replace(/\r/g,'').split('\n');
-      const lineHeight=Math.round(t.fontSize*1.3*state.scale*dpr);
-      for(let i=0;i<lines.length;i++){ o.fillText(lines[i], x, y+i*lineHeight); }
+      const task = page.render({canvasContext:pdfCtx, viewport:v});
+      state.renderTask = task;
+      await task.promise;
+      if(seq!==state.renderSeq) return; // 古い描画は破棄
+    }catch(e){
+      // cancel時は無視
+    }finally{
+      if(seq===state.renderSeq) state.renderTask=null;
+      pdfCtx.restore();
     }
-    const a=document.createElement('a'); a.href=out.toDataURL('image/png'); a.download=`note_page${state.pdf?state.page:1}.png`; a.click();
+    ui.info.textContent=`${state.page}/${state.totalPages}`;
+  }else{
+    ui.info.textContent='—/—';
   }
-  ui.savePNGBtn.onclick=savePNG;
+  redrawInk();
+  layoutTextboxes();
+}
 
-  // ショートカット（簡易）
-  function isEditableTarget(t){ return t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable); }
-  window.addEventListener('keydown',(e)=>{
-    const k=e.key.toLowerCase(); const isMac=navigator.platform.toUpperCase().includes('MAC'); const meta=isMac?e.metaKey:e.ctrlKey;
-    if(isEditableTarget(e.target)){ if(meta && e.key==='Enter'){ e.preventDefault(); if(e.target && typeof e.target.blur==='function') e.target.blur(); } return; }
-    if(meta && k==='z' && !e.shiftKey){ e.preventDefault(); if(state.history.length){ state.redoStack.push(state.history.pop()); redrawInk(); } return; }
-    if(meta && (k==='y'||(k==='z'&&e.shiftKey))){ e.preventDefault(); if(state.redoStack.length){ state.history.push(state.redoStack.pop()); redrawInk(); } return; }
-    if(k==='p'){ setActiveTool('pen'); return; }
-    if(k==='e'){ setActiveTool('eraser'); return; }
-    if(k==='t'){ setActiveTool('text'); return; }
-    if(e.key==='['){ e.preventDefault(); ui.size.value=Math.max(+ui.size.min,+ui.size.value-1); state.size=+ui.size.value; return; }
-    if(e.key===']'){ e.preventDefault(); ui.size.value=Math.min(+ui.size.max,+ui.size.value+1); state.size=+ui.size.value; return; }
-  });
-
-  // ピンチズーム（中心維持） & ダブルタップ100%
-  let pinchDist=0, lastTap=0;
-  function getTouchesCenter(touches){
-    return { x:(touches[0].clientX+touches[1].clientX)/2, y:(touches[0].clientY+touches[1].clientY)/2 };
-  }
-
-  stageWrap.addEventListener('touchstart',e=>{
-    if(e.touches.length===2){
-      pinchDist=Math.hypot(
-        e.touches[0].clientX-e.touches[1].clientX,
-        e.touches[0].clientY-e.touches[1].clientY
-      );
-    } else if(e.touches.length===1){
-      const now=Date.now();
-      if(now-lastTap<300){
-        state.scale=1;
-        drawPage().then(()=> stageWrap.scrollTo({left:0,top:0,behavior:'auto'}));
-      }
-      lastTap=now;
+// ------ Ink (logical coords) ------
+const scaled = p=>({x:p.x*state.scale, y:p.y*state.scale, pres:p.pres});
+function drawLine(ctx,a,b,opt){
+  const pressure=b.pres??1, base=opt.size||state.size;
+  const w=opt.pressure? base*pressure: base;
+  ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle=opt.color||state.color; ctx.lineWidth=w;
+  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+}
+function eraseLine(ctx,a,b,esize){
+  ctx.save(); ctx.globalCompositeOperation='destination-out';
+  drawLine(ctx,a,b,{color:'#000', size:esize||state.size*2, pressure:true});
+  ctx.restore();
+}
+function getLogicalPos(e){
+  const r=inkCanvas.getBoundingClientRect();
+  return {x:(e.clientX-r.left)/state.scale, y:(e.clientY-r.top)/state.scale, pres:e.pressure>0?e.pressure:1};
+}
+function begin(p){ state.drawing=true; state.last=p; state.stroke=[{p,tool:state.tool,color:state.color,size:state.size}]; }
+function move(p){
+  if(!state.drawing) return;
+  const a=state.last,b=p, As=scaled(a), Bs=scaled(b);
+  if(state.tool==='pen') drawLine(inkCtx,As,Bs,{pressure:true,size:state.size*state.scale,color:state.color});
+  else eraseLine(inkCtx,As,Bs,(state.size*2)*state.scale);
+  state.stroke.push({p,tool:state.tool,color:state.color,size:state.size});
+  state.last=b;
+}
+function end(){ if(!state.drawing) return; state.drawing=false; state.history.push({ops:state.stroke}); state.redoStack=[]; }
+function redrawInk(){
+  inkCtx.setTransform(dpr,0,0,dpr,0,0);
+  inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr);
+  for(const h of state.history){
+    for(let i=1;i<h.ops.length;i++){
+      const A=h.ops[i-1],B=h.ops[i]; const a=scaled(A.p), b=scaled(B.p);
+      if(B.tool==='pen') drawLine(inkCtx,a,b,{color:A.color,size:(A.size||state.size)*state.scale});
+      else eraseLine(inkCtx,a,b,((A.size||state.size)*2)*state.scale);
     }
-  },{passive:true});
+  }
+}
 
-  stageWrap.addEventListener('touchmove',e=>{
-    if(e.touches.length===2){
-      const newDist=Math.hypot(
-        e.touches[0].clientX-e.touches[1].clientX,
-        e.touches[0].clientY-e.touches[1].clientY
-      );
-      const center=getTouchesCenter(e.touches);
-      const delta=newDist/(pinchDist||newDist);
-      pinchDist=newDist;
+// ------ Text ------
+function layoutTextboxes(){
+  const curr=String(state.pdf?state.page:1);
+  for(const t of state.texts){
+    const {el,page,fontSize,color,x,y}=t;
+    const onThisPage = String(page||1)===curr;
+    el.style.display = onThisPage ? 'block' : 'none';
+    if(!onThisPage) continue;
+    el.style.left=(x*state.scale)+'px';
+    el.style.top =(y*state.scale)+'px';
+    el.style.fontSize=(fontSize*state.scale)+'px';
+    el.style.color=color;
+  }
+}
+function createTextbox(xCss,yCss,opts={}){
+  const lx=xCss/state.scale, ly=yCss/state.scale;
+  const el=document.createElement('div'); el.className='textbox sel'; el.contentEditable='true'; el.spellcheck=false;
+  const color=toHexColor(opts.color||state.color); const fontSize=(opts.fontSize||+ui.fontSize.value);
+  const pageIndex = state.pdf?state.page:1;
+  const item={el,x:lx,y:ly,fontSize,color,page:pageIndex}; state.texts.push(item);
+  el.style.left=(lx*state.scale)+'px'; el.style.top=(ly*state.scale)+'px';
+  el.style.fontSize=(fontSize*state.scale)+'px'; el.style.color=color;
+  el.dataset.color=color; el.dataset.fontSize=String(fontSize); el.dataset.page=String(pageIndex);
+  el.addEventListener('focus',()=>selectTextbox(item));
+  el.addEventListener('blur',()=>el.classList.remove('sel'));
+  el.addEventListener('keydown',(e)=>{ if((e.key==='Backspace'||e.key==='Delete') && el.textContent===''){ e.preventDefault(); removeTextbox(item);} });
+  // drag
+  let dragging=false,sx=0,sy=0;
+  el.addEventListener('pointerdown',(e)=>{ dragging=true; el.setPointerCapture(e.pointerId); sx=e.clientX; sy=e.clientY; selectTextbox(item); });
+  el.addEventListener('pointermove',(e)=>{ if(!dragging) return; const dx=e.clientX-sx, dy=e.clientY-sy; item.x+=dx/state.scale; item.y+=dy/state.scale; el.style.left=(item.x*state.scale)+'px'; el.style.top=(item.y*state.scale)+'px'; sx=e.clientX; sy=e.clientY; });
+  ['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=> el.addEventListener(t, ()=> dragging=false ));
+  textLayer.appendChild(el); el.focus(); layoutTextboxes(); return item;
+}
+function selectTextbox(item){
+  document.querySelectorAll('.textbox.sel').forEach(n=>n.classList.remove('sel'));
+  item.el.classList.add('sel');
+  ui.color.value=item.color; setSelectedPalette(item.color); ui.fontSize.value=String(item.fontSize);
+}
+function removeTextbox(item){ const i=state.texts.indexOf(item); if(i>=0) state.texts.splice(i,1); item.el.remove(); }
 
-      const oldScale=state.scale;
-      const newScale=Math.min(3,Math.max(0.5, oldScale*delta));
-      if(newScale!==oldScale){
-        const rect=stageWrap.getBoundingClientRect();
-        const cx = center.x - rect.left + stageWrap.scrollLeft;
-        const cy = center.y - rect.top  + stageWrap.scrollTop;
-        state.scale=newScale;
-        drawPage().then(()=>{
+// ------ UI events ------
+ui.color.addEventListener('input', ()=> setSelectedPalette(ui.color.value));
+ui.paletteWrap.addEventListener('click',(e)=>{ const b=e.target.closest('button[data-color]'); if(!b) return; setSelectedPalette(b.dataset.color); });
+ui.size.addEventListener('input', ()=> state.size=+ui.size.value);
+ui.fontSize.addEventListener('input', ()=>{
+  const sel=document.querySelector('.textbox.sel'); if(!sel) return;
+  const item=state.texts.find(t=>t.el===sel); if(!item) return;
+  item.fontSize=+ui.fontSize.value; layoutTextboxes();
+});
+ui.penBtn.onclick=()=>setActiveTool('pen');
+ui.eraserBtn.onclick=()=>setActiveTool('eraser');
+ui.textBtn.onclick=()=>setActiveTool('text');
+ui.undoBtn.onclick=()=>{ if(state.history.length){ state.redoStack.push(state.history.pop()); redrawInk(); } };
+ui.redoBtn.onclick=()=>{ if(state.redoStack.length){ state.history.push(state.redoStack.pop()); redrawInk(); } };
+ui.clearBtn.onclick=()=>{ if(confirm('全消去しますか？')){ state.history=[]; state.redoStack=[]; inkCtx.setTransform(dpr,0,0,dpr,0,0); inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr); for(const t of state.texts)t.el.remove(); state.texts=[]; } };
+ui.pdfInput.onchange=async e=>{
+  const f=e.target.files?.[0]; if(!f) return;
+  try{
+    const buf=await f.arrayBuffer();
+    state.pdf=await pdfjsLib.getDocument({data:buf}).promise;
+    state.totalPages=state.pdf.numPages; state.page=1;
+    await drawPage();
+  }catch(err){ console.error(err); alert('PDF読み込み失敗: '+(err.message||err)); }
+};
+ui.prev.onclick=()=>{ if(state.pdf && state.page>1){ state.page--; drawPage(); } };
+ui.next.onclick=()=>{ if(state.pdf && state.page<state.totalPages){ state.page++; drawPage(); } };
+ui.scrollUp.onclick=()=>stageWrap.scrollBy({top:-200,behavior:'smooth'});
+ui.scrollDown.onclick=()=>stageWrap.scrollBy({top:200,behavior:'smooth'});
+textLayer.addEventListener('pointerdown',(e)=>{ if(state.tool!=='text') return; const r=textLayer.getBoundingClientRect(); createTextbox(e.clientX-r.left, e.clientY-r.top, {fontSize:+ui.fontSize.value, color:state.color}); });
+
+// Ink pointer（※ピンチ中は描画停止）
+inkCanvas.addEventListener('pointerdown',e=>{
+  if(state.isPinching) return; // ピンチ優先
+  if(state.tool!=='pen' && state.tool!=='eraser') return;
+  if(state.penOnly && e.pointerType!=='pen') return;
+  inkCanvas.setPointerCapture(e.pointerId); begin(getLogicalPos(e));
+});
+inkCanvas.addEventListener('pointermove',e=>{
+  if(state.isPinching) return;
+  if(state.tool!=='pen' && state.tool!=='eraser') return;
+  if(state.penOnly && e.pointerType!=='pen') return;
+  if(state.drawing) move(getLogicalPos(e));
+});
+['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t, ()=> end()) );
+
+// ------ Pinch zoom (Pointer Events, 2本指でのみ) ------
+function scheduleDrawThrottle(){
+  if(state.rafScheduled) return;
+  state.rafScheduled=true;
+  requestAnimationFrame(()=>{ state.rafScheduled=false; drawPage(); });
+}
+function onTouchPointersChanged(){
+  const touches=[...state.touches.values()];
+  if(touches.length>=2){
+    state.isPinching=true;
+    // 2点から距離と中心
+    const [a,b]=touches;
+    const dx=b.x-a.x, dy=b.y-a.y;
+    state.lastDist=Math.hypot(dx,dy);
+    state.lastCenter={x:(a.x+b.x)/2, y:(a.y+b.y)/2};
+  }else{
+    state.isPinching=false;
+  }
+}
+function pointerPos(e){ return {x:e.clientX, y:e.clientY}; }
+
+stageWrap.addEventListener('pointerdown', e=>{
+  if(e.pointerType==='touch'){
+    state.touches.set(e.pointerId, pointerPos(e));
+    onTouchPointersChanged();
+  }
+});
+stageWrap.addEventListener('pointermove', e=>{
+  if(e.pointerType==='touch' && state.touches.has(e.pointerId)){
+    state.touches.set(e.pointerId, pointerPos(e));
+    if(state.isPinching && state.touches.size>=2){
+      const t=[...state.touches.values()];
+      const [a,b]=t; const dx=b.x-a.x, dy=b.y-a.y;
+      const newDist=Math.hypot(dx,dy);
+      const center={x:(a.x+b.x)/2, y:(a.y+b.y)/2};
+      const delta=newDist/(state.lastDist||newDist);
+      // 微小変化は無視（±1%）
+      if(delta>1.01 || delta<0.99){
+        const oldScale=state.scale;
+        const newScale=Math.min(3, Math.max(0.5, oldScale*delta));
+        if(newScale!==oldScale){
+          const rect=stageWrap.getBoundingClientRect();
+          const cx = center.x - rect.left + stageWrap.scrollLeft;
+          const cy = center.y - rect.top  + stageWrap.scrollTop;
+          state.scale=newScale;
+          // 描画はRAFでスロットル、完了後スクロール補正
+          scheduleDrawThrottle();
           const factor=newScale/oldScale;
-          const nx = cx*factor - (center.x - rect.left);
-          const ny = cy*factor - (center.y - rect.top);
-          stageWrap.scrollLeft = Math.max(0, nx);
-          stageWrap.scrollTop  = Math.max(0, ny);
-        });
+          // 次のフレームで反映される前に大きくズレないよう即時近似補正
+          stageWrap.scrollLeft = Math.max(0, cx*factor - (center.x - rect.left));
+          stageWrap.scrollTop  = Math.max(0, cy*factor - (center.y - rect.top));
+        }
+        state.lastDist=newDist; state.lastCenter=center;
       }
       e.preventDefault();
     }
-  },{passive:false});
+  }
+});
+['pointerup','pointercancel','pointerleave','pointerout'].forEach(type=>{
+  stageWrap.addEventListener(type, e=>{
+    if(e.pointerType==='touch'){
+      state.touches.delete(e.pointerId);
+      onTouchPointersChanged();
+    }
+  });
+});
 
-  // 初期：白紙 + 余白で起動
-  window.addEventListener('load', ()=>{ drawPage(); });
-  window.addEventListener('resize', ()=>{ drawPage(); });
+// ダブルタップで100%
+let lastTap=0;
+stageWrap.addEventListener('pointerdown', e=>{
+  if(e.pointerType==='touch' && !state.isPinching){
+    const now=Date.now();
+    if(now-lastTap<300){
+      state.scale=1;
+      drawPage().then(()=> stageWrap.scrollTo({left:0,top:0,behavior:'auto'}));
+    }
+    lastTap=now;
+  }
+});
+
+// ------ Save PNG ------
+function savePNG(){
+  const out=document.createElement('canvas'); out.width=pdfCanvas.width; out.height=pdfCanvas.height;
+  const o=out.getContext('2d'); o.drawImage(pdfCanvas,0,0); o.drawImage(inkCanvas,0,0);
+  const curr=String(state.pdf?state.page:1); o.textBaseline='top';
+  for(const t of state.texts){
+    if(String(t.page||1)!==curr) continue;
+    const x=t.x*state.scale*dpr, y=t.y*state.scale*dpr, fontPx=Math.round(t.fontSize*state.scale*dpr);
+    o.fillStyle=t.color;
+    o.font=`${fontPx}px system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Noto Sans JP",sans-serif`;
+    const lines=(t.el.innerText||'').replace(/\r/g,'').split('\n');
+    const lineHeight=Math.round(t.fontSize*1.3*state.scale*dpr);
+    for(let i=0;i<lines.length;i++){ o.fillText(lines[i], x, y+i*lineHeight); }
+  }
+  const a=document.createElement('a'); a.href=out.toDataURL('image/png'); a.download=`note_page${state.pdf?state.page:1}.png`; a.click();
+}
+ui.savePNGBtn.onclick=savePNG;
+
+// 初期
+window.addEventListener('load', ()=> drawPage() );
+window.addEventListener('resize', ()=> drawPage() );
 </script>
 </body>
 </html>
