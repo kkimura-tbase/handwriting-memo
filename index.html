@@ -69,7 +69,7 @@ import * as pdfjsLib from './build/pdf.mjs';
 pdfjsLib.GlobalWorkerOptions.workerSrc = './build/pdf.worker.mjs';
 
 /* ===== 調整用パラメータ ===== */
-const ERASER_FACTOR = 3; // 消しゴムはペン太さの何倍にするか（2.5〜4 などお好みで）
+const ERASER_FACTOR = 6; // 消しゴムはペン太さの何倍にするか（2.5〜4 などお好みで）
 
 const dpr = window.devicePixelRatio||1;
 const pdfCanvas = document.getElementById('pdfLayer');
@@ -475,3 +475,4 @@ window.addEventListener('resize', ()=> drawPage() );
 </script>
 </body>
 </html>
+
