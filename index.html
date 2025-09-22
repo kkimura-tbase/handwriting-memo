@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>手書きメモ（指スクロール＆ピンチ/パン最適化）</title>
+<title>手書きメモ（Classroomワンクリック読込版）</title>
 <link rel="icon" href="data:,">
 <style>
   html,body{height:100%;margin:0;font-family:system-ui}
@@ -11,10 +11,7 @@
   .toolbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;
            padding:.6rem;background:#f6f6f6;border-bottom:1px solid #ddd}
   .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
-  #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto;
-             /* ラッパーはネイティブパン許可だが、キャンバスはJS制御 */
-             touch-action: pan-x pan-y;}
-  /* キャンバス上は描画やカスタムジェスチャをするので既定は none（手ツール時もJSでパン） */
+  #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto;touch-action: pan-x pan-y;}
   canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
   #pdfLayer{z-index:0}
   #inkLayer{z-index:1}
@@ -69,7 +66,7 @@ import * as pdfjsLib from './build/pdf.mjs';
 pdfjsLib.GlobalWorkerOptions.workerSrc = './build/pdf.worker.mjs';
 
 /* ===== 調整用パラメータ ===== */
-const ERASER_FACTOR = 6; // 消しゴムはペン太さの何倍にするか（2.5〜4 などお好みで）
+const ERASER_FACTOR = 6; // 消しゴムはペン太さの何倍にするか（好みに応じて 5〜10 など）
 
 const dpr = window.devicePixelRatio||1;
 const pdfCanvas = document.getElementById('pdfLayer');
@@ -112,6 +109,34 @@ function toHexColor(c){
   return NAME[c]||'#111111';
 }
 
+/* ===== 自動ロード（?pdf= または ?fileId=） ===== */
+async function autoLoadPdfFromQuery(){
+  const url = new URL(location.href);
+  let pdfUrl = url.searchParams.get('pdf');
+  const fileId = url.searchParams.get('fileId');
+
+  // fileId だけもらった場合は Google Drive の公開ダウンロードURLに変換
+  if (!pdfUrl && fileId) {
+    pdfUrl = `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`;
+  }
+  if (!pdfUrl) return false;
+
+  try{
+    const res = await fetch(pdfUrl);
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const buf = await res.arrayBuffer();
+    state.pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    state.totalPages = state.pdf.numPages;
+    state.page = 1;
+    await drawPage();
+    return true;
+  }catch(err){
+    console.error(err);
+    alert('PDFの自動読み込みに失敗しました。リンク（?pdf= or ?fileId=）をご確認ください。');
+    return false;
+  }
+}
+
 const state = {
   tool:'pen', color:toHexColor(ui.color.value), size:+ui.size.value,
   drawing:false, last:null, stroke:[], history:[], redoStack:[],
@@ -119,30 +144,22 @@ const state = {
   scale:1, baseWidth:0, baseHeight:0,
   margin:200, pdfOffsetX:0, pdfOffsetY:0,
   texts:[],
-  // ピンチ/パン管理
   isPinching:false, touches:new Map(), lastCenter:null, lastDist:0, rafScheduled:false,
-  // 手ツール（ドラッグでスクロール）
   isHandPanning:false, handStart: {x:0,y:0,sl:0,st:0},
-  // PDF描画制御
   renderTask:null, renderSeq:0,
-  // Inkの指名
   activePointerId:null, activePointerType:null
 };
 
-// ----- UI/ツール切替 -----
+// ----- ツール切替 -----
 function setActiveTool(tool){
   state.tool=tool;
   const map={pen:ui.penBtn,eraser:ui.eraserBtn,text:ui.textBtn,hand:ui.handBtn};
   [ui.penBtn,ui.eraserBtn,ui.textBtn,ui.handBtn].forEach(b=>{
     const on=b===map[tool]; b.classList.toggle('active',on); b.setAttribute('aria-pressed',String(on));
   });
-  // テキスト編集のON/OFF
   textLayer.style.pointerEvents = (tool==='text') ? 'auto' : 'none';
-
-  // キャンバス上は常に none（手ツール時はJSでscrollを更新）
   pdfCanvas.style.touchAction = 'none';
   inkCanvas.style.touchAction = 'none';
-
   stageWrap.classList.toggle('grabbing', tool==='hand' && state.isHandPanning);
 }
 setActiveTool('pen');
@@ -165,7 +182,7 @@ function ensureBaseSize(){
 function contentWidth(){ return state.baseWidth + state.margin*2; }
 function contentHeight(){ return state.baseHeight + state.margin*2; }
 
-// ----- 描画（キャンセル/スロットル） -----
+// ----- 描画 -----
 async function drawPage(){
   ensureBaseSize();
   if(state.renderTask){ try{ state.renderTask.cancel(); }catch{} state.renderTask=null; }
@@ -229,7 +246,6 @@ function drawLine(ctx,a,b,opt){
 }
 function eraseLine(ctx,a,b,esize){
   ctx.save(); ctx.globalCompositeOperation='destination-out';
-  // 既定サイズを ERASER_FACTOR 倍に
   drawLine(ctx,a,b,{color:'#000', size:esize || state.size*ERASER_FACTOR, pressure:true});
   ctx.restore();
 }
@@ -244,7 +260,6 @@ function move(p){
   if(state.tool==='pen'){
     drawLine(inkCtx,As,Bs,{pressure:true,size:state.size*state.scale,color:state.color});
   }else{
-    // 消しゴムはペン太さの ERASER_FACTOR 倍
     eraseLine(inkCtx,As,Bs,(state.size*ERASER_FACTOR)*state.scale);
   }
   state.stroke.push({p,tool:state.tool,color:state.color,size:state.size});
@@ -260,7 +275,6 @@ function redrawInk(){
       if(B.tool==='pen'){
         drawLine(inkCtx,a,b,{color:A.color,size:(A.size||state.size)*state.scale});
       }else{
-        // 履歴再描画も ERASER_FACTOR 倍
         eraseLine(inkCtx,a,b,((A.size||state.size)*ERASER_FACTOR)*state.scale);
       }
     }
@@ -345,8 +359,8 @@ textLayer.addEventListener('pointerdown',(e)=>{
 
 // ----- 手ツール（全ポインタでドラッグ＝スクロール） -----
 function canHandPanPointer(e){
-  if(state.isPinching) return false;      // 2本指操作を優先
-  if(state.tool!=='hand') return false;   // 手ツール時のみ
+  if(state.isPinching) return false;
+  if(state.tool!=='hand') return false;
   return true;
 }
 stageWrap.addEventListener('pointerdown', e=>{
@@ -358,12 +372,12 @@ stageWrap.addEventListener('pointerdown', e=>{
 });
 stageWrap.addEventListener('pointermove', e=>{
   if(!state.isHandPanning) return;
-  if(state.isPinching) return; // ピンチが始まったらドラッグ停止
+  if(state.isPinching) return;
   const dx = e.clientX - state.handStart.x;
   const dy = e.clientY - state.handStart.y;
   stageWrap.scrollLeft = state.handStart.sl - dx;
   stageWrap.scrollTop  = state.handStart.st - dy;
-  if(e.pointerType==='touch') e.preventDefault(); // ページスクロール抑止
+  if(e.pointerType==='touch') e.preventDefault();
 });
 ['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=>{
   stageWrap.addEventListener(t, ()=>{
@@ -374,7 +388,7 @@ stageWrap.addEventListener('pointermove', e=>{
   });
 });
 
-// ----- ピンチズーム & 2本指パン（中心維持・しきい値±1%） -----
+// ----- ピンチズーム & 2本指パン -----
 function pointerPos(e){ return {x:e.clientX, y:e.clientY}; }
 function onTouchPointersChanged(){
   const touches=[...state.touches.values()];
@@ -451,7 +465,7 @@ stageWrap.addEventListener('pointerdown', e=>{
   }
 });
 
-// 保存
+// 保存（PNG）
 function savePNG(){
   const out=document.createElement('canvas'); out.width=pdfCanvas.width; out.height=pdfCanvas.height;
   const o=out.getContext('2d'); o.drawImage(pdfCanvas,0,0); o.drawImage(inkCanvas,0,0);
@@ -469,10 +483,12 @@ function savePNG(){
 }
 ui.savePNGBtn.onclick=savePNG;
 
-// 初期
-window.addEventListener('load', ()=> drawPage() );
+// 初期：自動ロード→未ロードなら白紙描画
+window.addEventListener('load', async ()=>{
+  const loaded = await autoLoadPdfFromQuery();
+  if (!loaded) await drawPage();
+});
 window.addEventListener('resize', ()=> drawPage() );
 </script>
 </body>
 </html>
-
