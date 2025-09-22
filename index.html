@@ -313,20 +313,58 @@ ui.scrollUp.onclick=()=>stageWrap.scrollBy({top:-200,behavior:'smooth'});
 ui.scrollDown.onclick=()=>stageWrap.scrollBy({top:200,behavior:'smooth'});
 textLayer.addEventListener('pointerdown',(e)=>{ if(state.tool!=='text') return; const r=textLayer.getBoundingClientRect(); createTextbox(e.clientX-r.left, e.clientY-r.top, {fontSize:+ui.fontSize.value, color:state.color}); });
 
-// Ink pointer（※ピンチ中は描画停止）
-inkCanvas.addEventListener('pointerdown',e=>{
-  if(state.isPinching) return; // ピンチ優先
-  if(state.tool!=='pen' && state.tool!=='eraser') return;
-  if(state.penOnly && e.pointerType!=='pen') return;
-  inkCanvas.setPointerCapture(e.pointerId); begin(getLogicalPos(e));
+// --- Ink 入力（ペンのみ強化版 & 1本指名制） ---
+state.activePointerId = null;
+state.activePointerType = null;
+
+function isPenLike(e){
+  const isPen = e.pointerType === 'pen';
+  const isMouseOnNonTouchPC = (e.pointerType === 'mouse' && (navigator.maxTouchPoints||0) === 0);
+  return isPen || isMouseOnNonTouchPC;
+}
+
+inkCanvas.addEventListener('pointerdown', e => {
+  if (state.isPinching) return;
+  if (state.tool !== 'pen' && state.tool !== 'eraser') return;
+  if (state.penOnly && !isPenLike(e)) return;
+
+  if (state.activePointerId !== null && state.activePointerId !== e.pointerId) return;
+
+  state.activePointerId = e.pointerId;
+  state.activePointerType = e.pointerType;
+
+  try { inkCanvas.setPointerCapture(e.pointerId); } catch {}
+
+  begin(getLogicalPos(e));
 });
-inkCanvas.addEventListener('pointermove',e=>{
-  if(state.isPinching) return;
-  if(state.tool!=='pen' && state.tool!=='eraser') return;
-  if(state.penOnly && e.pointerType!=='pen') return;
-  if(state.drawing) move(getLogicalPos(e));
+
+inkCanvas.addEventListener('pointermove', e => {
+  if (state.isPinching) return;
+  if (state.activePointerId === null || e.pointerId !== state.activePointerId) return;
+  if (state.tool !== 'pen' && state.tool !== 'eraser') return;
+  if (state.penOnly && !isPenLike(e)) return;
+
+  if (state.drawing) move(getLogicalPos(e));
 });
-['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t, ()=> end()) );
+
+function finishPointer(e){
+  if (state.activePointerId !== null && e.pointerId === state.activePointerId){
+    end();
+    state.activePointerId = null;
+    state.activePointerType = null;
+  }
+}
+['pointerup','pointercancel','pointerout','pointerleave']
+  .forEach(t => inkCanvas.addEventListener(t, finishPointer));
+
+ui.penOnly.addEventListener('change', e => {
+  state.penOnly = e.target.checked;
+  if (state.penOnly && state.activePointerType !== 'pen') {
+    state.activePointerId = null;
+    state.activePointerType = null;
+    state.drawing = false;
+  }
+});
 
 // ------ Pinch zoom (Pointer Events, 2本指でのみ) ------
 function scheduleDrawThrottle(){
@@ -432,3 +470,4 @@ window.addEventListener('resize', ()=> drawPage() );
 </script>
 </body>
 </html>
+
