@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>手書きメモ（ピンチ安定＆PDFチラつき対策）</title>
+<title>手書きメモ（指スクロール＆ピンチ/パン最適化）</title>
 <link rel="icon" href="data:,">
 <style>
   html,body{height:100%;margin:0;font-family:system-ui}
@@ -11,8 +11,10 @@
   .toolbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;
            padding:.6rem;background:#f6f6f6;border-bottom:1px solid #ddd}
   .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
-  #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto}
-  /* ピンチは自前でやるので none */
+  #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto;
+             /* ブラウザのネイティブパンを許可（キャンバス上は自前処理するので問題なし） */
+             touch-action: pan-x pan-y;}
+  /* キャンバス上は描画やカスタムジェスチャをするので none */
   canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
   #pdfLayer{z-index:0}
   #inkLayer{z-index:1}
@@ -24,6 +26,8 @@
   .textbox{position:absolute;min-width:40px;min-height:24px;padding:2px 4px;outline:none;border:1px dashed transparent;
            white-space:pre-wrap;word-break:break-word;background:transparent;cursor:text;user-select:text}
   .textbox.sel{border-color:#6a9bff;box-shadow:0 0 0 2px #cfe0ff inset;background:rgba(255,255,255,.2)}
+  /* 手のツール時の見た目 */
+  .grabbing{cursor:grabbing;}
 </style>
 </head>
 <body>
@@ -42,6 +46,7 @@
     <button id="penBtn" class="tool-btn" aria-pressed="true">✒️ペン</button>
     <button id="eraserBtn" class="tool-btn" aria-pressed="false">🧽消しゴム</button>
     <button id="textBtn" class="tool-btn" aria-pressed="false">T テキスト</button>
+    <button id="handBtn" class="tool-btn" aria-pressed="false">✋移動</button>
     <label>文字 <input id="fontSize" type="number" min="10" max="96" value="18" style="width:4.5rem"></label>
     <label><input type="checkbox" id="penOnly">ペンのみ</label>
     <button id="undoBtn">↶Undo</button>
@@ -52,6 +57,7 @@
     <button id="scrollUp">▲</button><button id="scrollDown">▼</button>
     <button id="savePNGBtn">PNG保存</button>
   </div>
+
   <div id="stageWrap">
     <canvas id="pdfLayer"></canvas>
     <canvas id="inkLayer"></canvas>
@@ -78,6 +84,7 @@ const ui = {
   penBtn:document.getElementById('penBtn'),
   eraserBtn:document.getElementById('eraserBtn'),
   textBtn:document.getElementById('textBtn'),
+  handBtn:document.getElementById('handBtn'),
   penOnly:document.getElementById('penOnly'),
   undoBtn:document.getElementById('undoBtn'),
   redoBtn:document.getElementById('redoBtn'),
@@ -93,23 +100,6 @@ const ui = {
   scrollDown:document.getElementById('scrollDown'),
 };
 
-const state = {
-  tool:'pen', color:'#111111', size:+ui.size.value,
-  drawing:false, last:null, stroke:[], history:[], redoStack:[],
-  pdf:null, page:1, totalPages:0,
-  scale:1, baseWidth:0, baseHeight:0,
-  margin:200, pdfOffsetX:0, pdfOffsetY:0,
-  texts:[],
-  // ジェスチャ管理
-  isPinching:false,
-  touches:new Map(),     // pointerId -> {x,y}
-  lastCenter:null, lastDist:0,
-  rafScheduled:false,
-  // PDF描画制御
-  renderTask:null, renderSeq:0
-};
-
-// ------ helpers ------
 function toHexColor(c){
   if(!c) return '#111111';
   c=String(c).trim().toLowerCase();
@@ -119,13 +109,33 @@ function toHexColor(c){
   const NAME={black:'#000000',white:'#ffffff',red:'#ff0000',blue:'#0000ff',green:'#008000',yellow:'#ffff00',orange:'#ffa500',gray:'#808080',grey:'#808080'};
   return NAME[c]||'#111111';
 }
+
+const state = {
+  tool:'pen', color:toHexColor(ui.color.value), size:+ui.size.value,
+  drawing:false, last:null, stroke:[], history:[], redoStack:[],
+  pdf:null, page:1, totalPages:0,
+  scale:1, baseWidth:0, baseHeight:0,
+  margin:200, pdfOffsetX:0, pdfOffsetY:0,
+  texts:[],
+  // ピンチ/パン管理
+  isPinching:false, touches:new Map(), lastCenter:null, lastDist:0, rafScheduled:false,
+  // 手ツール（1本指ドラッグでスクロール）
+  isHandPanning:false, handStart={x:0,y:0,sl:0,st:0},
+  // PDF描画制御
+  renderTask:null, renderSeq:0,
+  // Inkの指名
+  activePointerId:null, activePointerType:null
+};
+
+// ----- UI/ツール切替 -----
 function setActiveTool(tool){
   state.tool=tool;
-  const map={pen:ui.penBtn,eraser:ui.eraserBtn,text:ui.textBtn};
-  [ui.penBtn,ui.eraserBtn,ui.textBtn].forEach(b=>{
+  const map={pen:ui.penBtn,eraser:ui.eraserBtn,text:ui.textBtn,hand:ui.handBtn};
+  [ui.penBtn,ui.eraserBtn,ui.textBtn,ui.handBtn].forEach(b=>{
     const on=b===map[tool]; b.classList.toggle('active',on); b.setAttribute('aria-pressed',String(on));
   });
   textLayer.style.pointerEvents = (tool==='text')?'auto':'none';
+  stageWrap.classList.toggle('grabbing', tool==='hand' && state.isHandPanning);
 }
 setActiveTool('pen');
 
@@ -137,24 +147,22 @@ function setSelectedPalette(color){
 }
 setSelectedPalette(ui.color.value);
 
-// ------ layout base ------
+// ----- レイアウト -----
 function ensureBaseSize(){
   if(state.baseWidth && state.baseHeight) return;
   const cssW=Math.max(600, stageWrap.clientWidth||800);
-  const cssH=Math.round(cssW*1.41421356); // A4縦比
+  const cssH=Math.round(cssW*1.41421356);
   state.baseWidth=cssW; state.baseHeight=cssH;
 }
 function contentWidth(){ return state.baseWidth + state.margin*2; }
 function contentHeight(){ return state.baseHeight + state.margin*2; }
 
-// ------ PDF draw with cancellation & throttle ------
+// ----- 描画（キャンセル/スロットル） -----
 async function drawPage(){
   ensureBaseSize();
-  // 既存レンダをキャンセル
   if(state.renderTask){ try{ state.renderTask.cancel(); }catch{} state.renderTask=null; }
   const seq = ++state.renderSeq;
 
-  // PDFがあれば基準更新
   if(state.pdf){
     const page = await state.pdf.getPage(state.page);
     const v1 = page.getViewport({scale:1});
@@ -169,14 +177,12 @@ async function drawPage(){
   textLayer.style.width=W+'px';   textLayer.style.height=H+'px';
 
   pdfCtx.setTransform(dpr,0,0,dpr,0,0);
-  // 背景（余白を含む）
   pdfCtx.fillStyle='#ffffff';
   pdfCtx.fillRect(0,0,pdfCanvas.width/dpr,pdfCanvas.height/dpr);
   pdfCtx.strokeStyle='#e0e0e0'; pdfCtx.lineWidth=1;
   pdfCtx.strokeRect(0.5,0.5,(pdfCanvas.width/dpr)-1,(pdfCanvas.height/dpr)-1);
 
   if(state.pdf){
-    // PDF描画はオフセット＋renderTask管理
     const page = await state.pdf.getPage(state.page);
     const v = page.getViewport({scale:state.scale});
     const offsetX = state.margin*state.scale;
@@ -189,13 +195,9 @@ async function drawPage(){
       const task = page.render({canvasContext:pdfCtx, viewport:v});
       state.renderTask = task;
       await task.promise;
-      if(seq!==state.renderSeq) return; // 古い描画は破棄
-    }catch(e){
-      // cancel時は無視
-    }finally{
-      if(seq===state.renderSeq) state.renderTask=null;
-      pdfCtx.restore();
-    }
+      if(seq!==state.renderSeq) return;
+    }catch(e){/* cancel時は無視 */}
+    finally{ if(seq===state.renderSeq) state.renderTask=null; pdfCtx.restore(); }
     ui.info.textContent=`${state.page}/${state.totalPages}`;
   }else{
     ui.info.textContent='—/—';
@@ -203,8 +205,13 @@ async function drawPage(){
   redrawInk();
   layoutTextboxes();
 }
+function scheduleDrawThrottle(){
+  if(state.rafScheduled) return;
+  state.rafScheduled=true;
+  requestAnimationFrame(()=>{ state.rafScheduled=false; drawPage(); });
+}
 
-// ------ Ink (logical coords) ------
+// ----- Ink -----
 const scaled = p=>({x:p.x*state.scale, y:p.y*state.scale, pres:p.pres});
 function drawLine(ctx,a,b,opt){
   const pressure=b.pres??1, base=opt.size||state.size;
@@ -243,7 +250,7 @@ function redrawInk(){
   }
 }
 
-// ------ Text ------
+// ----- Text -----
 function layoutTextboxes(){
   const curr=String(state.pdf?state.page:1);
   for(const t of state.texts){
@@ -269,7 +276,6 @@ function createTextbox(xCss,yCss,opts={}){
   el.addEventListener('focus',()=>selectTextbox(item));
   el.addEventListener('blur',()=>el.classList.remove('sel'));
   el.addEventListener('keydown',(e)=>{ if((e.key==='Backspace'||e.key==='Delete') && el.textContent===''){ e.preventDefault(); removeTextbox(item);} });
-  // drag
   let dragging=false,sx=0,sy=0;
   el.addEventListener('pointerdown',(e)=>{ dragging=true; el.setPointerCapture(e.pointerId); sx=e.clientX; sy=e.clientY; selectTextbox(item); });
   el.addEventListener('pointermove',(e)=>{ if(!dragging) return; const dx=e.clientX-sx, dy=e.clientY-sy; item.x+=dx/state.scale; item.y+=dy/state.scale; el.style.left=(item.x*state.scale)+'px'; el.style.top=(item.y*state.scale)+'px'; sx=e.clientX; sy=e.clientY; });
@@ -283,7 +289,7 @@ function selectTextbox(item){
 }
 function removeTextbox(item){ const i=state.texts.indexOf(item); if(i>=0) state.texts.splice(i,1); item.el.remove(); }
 
-// ------ UI events ------
+// ----- UI events -----
 ui.color.addEventListener('input', ()=> setSelectedPalette(ui.color.value));
 ui.paletteWrap.addEventListener('click',(e)=>{ const b=e.target.closest('button[data-color]'); if(!b) return; setSelectedPalette(b.dataset.color); });
 ui.size.addEventListener('input', ()=> state.size=+ui.size.value);
@@ -295,6 +301,7 @@ ui.fontSize.addEventListener('input', ()=>{
 ui.penBtn.onclick=()=>setActiveTool('pen');
 ui.eraserBtn.onclick=()=>setActiveTool('eraser');
 ui.textBtn.onclick=()=>setActiveTool('text');
+ui.handBtn.onclick=()=>setActiveTool('hand');
 ui.undoBtn.onclick=()=>{ if(state.history.length){ state.redoStack.push(state.history.pop()); redrawInk(); } };
 ui.redoBtn.onclick=()=>{ if(state.redoStack.length){ state.history.push(state.redoStack.pop()); redrawInk(); } };
 ui.clearBtn.onclick=()=>{ if(confirm('全消去しますか？')){ state.history=[]; state.redoStack=[]; inkCtx.setTransform(dpr,0,0,dpr,0,0); inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr); for(const t of state.texts)t.el.remove(); state.texts=[]; } };
@@ -311,82 +318,95 @@ ui.prev.onclick=()=>{ if(state.pdf && state.page>1){ state.page--; drawPage(); }
 ui.next.onclick=()=>{ if(state.pdf && state.page<state.totalPages){ state.page++; drawPage(); } };
 ui.scrollUp.onclick=()=>stageWrap.scrollBy({top:-200,behavior:'smooth'});
 ui.scrollDown.onclick=()=>stageWrap.scrollBy({top:200,behavior:'smooth'});
-textLayer.addEventListener('pointerdown',(e)=>{ if(state.tool!=='text') return; const r=textLayer.getBoundingClientRect(); createTextbox(e.clientX-r.left, e.clientY-r.top, {fontSize:+ui.fontSize.value, color:state.color}); });
 
-// --- Ink 入力（ペンのみ強化版 & 1本指名制） ---
-state.activePointerId = null;
-state.activePointerType = null;
+// テキスト作成
+textLayer.addEventListener('pointerdown',(e)=>{
+  if(state.tool!=='text') return;
+  const r=textLayer.getBoundingClientRect();
+  createTextbox(e.clientX-r.left, e.clientY-r.top, {fontSize:+ui.fontSize.value, color:state.color});
+});
 
+// ----- 手ツール（1本指／マウスでドラッグ＝スクロール） -----
+function canHandPanPointer(e){
+  // 2本以上のタッチがある時はピンチ優先
+  if(state.isPinching) return false;
+  // 手ツールの時だけ有効
+  if(state.tool!=='hand') return false;
+  return true;
+}
+stageWrap.addEventListener('pointerdown', e=>{
+  if(!canHandPanPointer(e)) return;
+  state.isHandPanning = true;
+  stageWrap.classList.add('grabbing');
+  state.handStart = { x:e.clientX, y:e.clientY, sl:stageWrap.scrollLeft, st:stageWrap.scrollTop };
+  try{ stageWrap.setPointerCapture(e.pointerId); }catch{}
+});
+stageWrap.addEventListener('pointermove', e=>{
+  if(!state.isHandPanning) return;
+  const dx = e.clientX - state.handStart.x;
+  const dy = e.clientY - state.handStart.y;
+  stageWrap.scrollLeft = state.handStart.sl - dx;
+  stageWrap.scrollTop  = state.handStart.st - dy;
+});
+['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=>{
+  stageWrap.addEventListener(t, ()=>{
+    if(state.isHandPanning){
+      state.isHandPanning=false;
+      stageWrap.classList.remove('grabbing');
+    }
+  });
+});
+
+// ----- Ink 入力（“ペンのみ”強化 & ポインタ指名） -----
 function isPenLike(e){
   const isPen = e.pointerType === 'pen';
   const isMouseOnNonTouchPC = (e.pointerType === 'mouse' && (navigator.maxTouchPoints||0) === 0);
   return isPen || isMouseOnNonTouchPC;
 }
-
 inkCanvas.addEventListener('pointerdown', e => {
   if (state.isPinching) return;
   if (state.tool !== 'pen' && state.tool !== 'eraser') return;
   if (state.penOnly && !isPenLike(e)) return;
-
   if (state.activePointerId !== null && state.activePointerId !== e.pointerId) return;
 
   state.activePointerId = e.pointerId;
   state.activePointerType = e.pointerType;
-
   try { inkCanvas.setPointerCapture(e.pointerId); } catch {}
-
   begin(getLogicalPos(e));
 });
-
 inkCanvas.addEventListener('pointermove', e => {
   if (state.isPinching) return;
   if (state.activePointerId === null || e.pointerId !== state.activePointerId) return;
   if (state.tool !== 'pen' && state.tool !== 'eraser') return;
   if (state.penOnly && !isPenLike(e)) return;
-
   if (state.drawing) move(getLogicalPos(e));
 });
-
 function finishPointer(e){
   if (state.activePointerId !== null && e.pointerId === state.activePointerId){
-    end();
-    state.activePointerId = null;
-    state.activePointerType = null;
+    end(); state.activePointerId=null; state.activePointerType=null;
   }
 }
-['pointerup','pointercancel','pointerout','pointerleave']
-  .forEach(t => inkCanvas.addEventListener(t, finishPointer));
-
-ui.penOnly.addEventListener('change', e => {
+['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t, finishPointer));
+ui.penOnly.addEventListener('change', e=>{
   state.penOnly = e.target.checked;
   if (state.penOnly && state.activePointerType !== 'pen') {
-    state.activePointerId = null;
-    state.activePointerType = null;
-    state.drawing = false;
+    state.activePointerId=null; state.activePointerType=null; state.drawing=false;
   }
 });
 
-// ------ Pinch zoom (Pointer Events, 2本指でのみ) ------
-function scheduleDrawThrottle(){
-  if(state.rafScheduled) return;
-  state.rafScheduled=true;
-  requestAnimationFrame(()=>{ state.rafScheduled=false; drawPage(); });
-}
+// ----- ピンチズーム & 2本指パン（中心維持・しきい値±1%） -----
+function pointerPos(e){ return {x:e.clientX, y:e.clientY}; }
 function onTouchPointersChanged(){
   const touches=[...state.touches.values()];
   if(touches.length>=2){
     state.isPinching=true;
-    // 2点から距離と中心
-    const [a,b]=touches;
-    const dx=b.x-a.x, dy=b.y-a.y;
+    const [a,b]=touches; const dx=b.x-a.x, dy=b.y-a.y;
     state.lastDist=Math.hypot(dx,dy);
     state.lastCenter={x:(a.x+b.x)/2, y:(a.y+b.y)/2};
   }else{
     state.isPinching=false;
   }
 }
-function pointerPos(e){ return {x:e.clientX, y:e.clientY}; }
-
 stageWrap.addEventListener('pointerdown', e=>{
   if(e.pointerType==='touch'){
     state.touches.set(e.pointerId, pointerPos(e));
@@ -396,30 +416,37 @@ stageWrap.addEventListener('pointerdown', e=>{
 stageWrap.addEventListener('pointermove', e=>{
   if(e.pointerType==='touch' && state.touches.has(e.pointerId)){
     state.touches.set(e.pointerId, pointerPos(e));
-    if(state.isPinching && state.touches.size>=2){
+    if(state.touches.size>=2){
       const t=[...state.touches.values()];
       const [a,b]=t; const dx=b.x-a.x, dy=b.y-a.y;
       const newDist=Math.hypot(dx,dy);
       const center={x:(a.x+b.x)/2, y:(a.y+b.y)/2};
       const delta=newDist/(state.lastDist||newDist);
-      // 微小変化は無視（±1%）
+
+      const rect=stageWrap.getBoundingClientRect();
+      const cx = center.x - rect.left + stageWrap.scrollLeft;
+      const cy = center.y - rect.top  + stageWrap.scrollTop;
+
+      // しきい値：±1%未満 → ピンチではなく「2本指パン」とみなす
       if(delta>1.01 || delta<0.99){
         const oldScale=state.scale;
         const newScale=Math.min(3, Math.max(0.5, oldScale*delta));
         if(newScale!==oldScale){
-          const rect=stageWrap.getBoundingClientRect();
-          const cx = center.x - rect.left + stageWrap.scrollLeft;
-          const cy = center.y - rect.top  + stageWrap.scrollTop;
           state.scale=newScale;
-          // 描画はRAFでスロットル、完了後スクロール補正
           scheduleDrawThrottle();
           const factor=newScale/oldScale;
-          // 次のフレームで反映される前に大きくズレないよう即時近似補正
           stageWrap.scrollLeft = Math.max(0, cx*factor - (center.x - rect.left));
           stageWrap.scrollTop  = Math.max(0, cy*factor - (center.y - rect.top));
         }
-        state.lastDist=newDist; state.lastCenter=center;
+      }else{
+        // 2本指パン：中心の移動量ぶんスクロール
+        const dxCenter = center.x - (state.lastCenter?.x ?? center.x);
+        const dyCenter = center.y - (state.lastCenter?.y ?? center.y);
+        stageWrap.scrollLeft -= dxCenter;
+        stageWrap.scrollTop  -= dyCenter;
       }
+
+      state.lastDist=newDist; state.lastCenter=center;
       e.preventDefault();
     }
   }
@@ -446,7 +473,7 @@ stageWrap.addEventListener('pointerdown', e=>{
   }
 });
 
-// ------ Save PNG ------
+// 保存
 function savePNG(){
   const out=document.createElement('canvas'); out.width=pdfCanvas.width; out.height=pdfCanvas.height;
   const o=out.getContext('2d'); o.drawImage(pdfCanvas,0,0); o.drawImage(inkCanvas,0,0);
@@ -457,8 +484,8 @@ function savePNG(){
     o.fillStyle=t.color;
     o.font=`${fontPx}px system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Noto Sans JP",sans-serif`;
     const lines=(t.el.innerText||'').replace(/\r/g,'').split('\n');
-    const lineHeight=Math.round(t.fontSize*1.3*state.scale*dpr);
-    for(let i=0;i<lines.length;i++){ o.fillText(lines[i], x, y+i*lineHeight); }
+    const lh=Math.round(t.fontSize*1.3*state.scale*dpr);
+    for(let i=0;i<lines.length;i++){ o.fillText(lines[i], x, y+i*lh); }
   }
   const a=document.createElement('a'); a.href=out.toDataURL('image/png'); a.download=`note_page${state.pdf?state.page:1}.png`; a.click();
 }
@@ -470,4 +497,3 @@ window.addEventListener('resize', ()=> drawPage() );
 </script>
 </body>
 </html>
-
