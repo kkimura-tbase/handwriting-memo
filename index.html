@@ -12,9 +12,9 @@
            padding:.6rem;background:#f6f6f6;border-bottom:1px solid #ddd}
   .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
   #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto;
-             /* ブラウザのネイティブパンを許可（キャンバス上は自前処理するので問題なし） */
+             /* ブラウザのネイティブパンを許可（全体ラッパー） */
              touch-action: pan-x pan-y;}
-  /* キャンバス上は描画やカスタムジェスチャをするので none */
+  /* キャンバス上は描画やカスタムジェスチャをするので既定は none（手ツール時はJSで上書き） */
   canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
   #pdfLayer{z-index:0}
   #inkLayer{z-index:1}
@@ -134,7 +134,14 @@ function setActiveTool(tool){
   [ui.penBtn,ui.eraserBtn,ui.textBtn,ui.handBtn].forEach(b=>{
     const on=b===map[tool]; b.classList.toggle('active',on); b.setAttribute('aria-pressed',String(on));
   });
-  textLayer.style.pointerEvents = (tool==='text')?'auto':'none';
+  // テキスト編集のON/OFF
+  textLayer.style.pointerEvents = (tool==='text') ? 'auto' : 'none';
+
+  // ✋移動のときはキャンバス上でもネイティブスクロールを許可（指1本スワイプでスクロール）
+  const ta = (tool==='hand') ? 'pan-x pan-y' : 'none';
+  pdfCanvas.style.touchAction = ta;
+  inkCanvas.style.touchAction = ta;
+
   stageWrap.classList.toggle('grabbing', tool==='hand' && state.isHandPanning);
 }
 setActiveTool('pen');
@@ -326,16 +333,16 @@ textLayer.addEventListener('pointerdown',(e)=>{
   createTextbox(e.clientX-r.left, e.clientY-r.top, {fontSize:+ui.fontSize.value, color:state.color});
 });
 
-// ----- 手ツール（1本指／マウスでドラッグ＝スクロール） -----
+// ----- 手ツール（タッチ＝ネイティブ／マウス＝ドラッグでスクロール） -----
 function canHandPanPointer(e){
-  // 2本以上のタッチがある時はピンチ優先
   if(state.isPinching) return false;
-  // 手ツールの時だけ有効
   if(state.tool!=='hand') return false;
   return true;
 }
+// マウスのときだけJSでドラッグスクロール（タッチはネイティブに任せる）
 stageWrap.addEventListener('pointerdown', e=>{
   if(!canHandPanPointer(e)) return;
+  if(e.pointerType!=='mouse') return; // ← タッチはネイティブスクロール
   state.isHandPanning = true;
   stageWrap.classList.add('grabbing');
   state.handStart = { x:e.clientX, y:e.clientY, sl:stageWrap.scrollLeft, st:stageWrap.scrollTop };
