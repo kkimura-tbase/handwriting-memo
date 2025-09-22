@@ -12,9 +12,9 @@
            padding:.6rem;background:#f6f6f6;border-bottom:1px solid #ddd}
   .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
   #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto;
-             /* ブラウザのネイティブパンを許可（全体ラッパー） */
+             /* ラッパーはネイティブパン許可だが、キャンバスはJS制御 */
              touch-action: pan-x pan-y;}
-  /* キャンバス上は描画やカスタムジェスチャをするので既定は none（手ツール時はJSで上書き） */
+  /* キャンバス上は描画やカスタムジェスチャをするので既定は none（手ツール時もJSでパン） */
   canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
   #pdfLayer{z-index:0}
   #inkLayer{z-index:1}
@@ -26,7 +26,6 @@
   .textbox{position:absolute;min-width:40px;min-height:24px;padding:2px 4px;outline:none;border:1px dashed transparent;
            white-space:pre-wrap;word-break:break-word;background:transparent;cursor:text;user-select:text}
   .textbox.sel{border-color:#6a9bff;box-shadow:0 0 0 2px #cfe0ff inset;background:rgba(255,255,255,.2)}
-  /* 手のツール時の見た目 */
   .grabbing{cursor:grabbing;}
 </style>
 </head>
@@ -68,6 +67,9 @@
 <script type="module">
 import * as pdfjsLib from './build/pdf.mjs';
 pdfjsLib.GlobalWorkerOptions.workerSrc = './build/pdf.worker.mjs';
+
+/* ===== 調整用パラメータ ===== */
+const ERASER_FACTOR = 3; // 消しゴムはペン太さの何倍にするか（2.5〜4 などお好みで）
 
 const dpr = window.devicePixelRatio||1;
 const pdfCanvas = document.getElementById('pdfLayer');
@@ -119,7 +121,7 @@ const state = {
   texts:[],
   // ピンチ/パン管理
   isPinching:false, touches:new Map(), lastCenter:null, lastDist:0, rafScheduled:false,
-  // 手ツール（1本指ドラッグでスクロール）
+  // 手ツール（ドラッグでスクロール）
   isHandPanning:false, handStart: {x:0,y:0,sl:0,st:0},
   // PDF描画制御
   renderTask:null, renderSeq:0,
@@ -137,10 +139,9 @@ function setActiveTool(tool){
   // テキスト編集のON/OFF
   textLayer.style.pointerEvents = (tool==='text') ? 'auto' : 'none';
 
-  // ✋移動のときはキャンバス上でもネイティブスクロールを許可（指1本スワイプでスクロール）
-  const ta = (tool==='hand') ? 'pan-x pan-y' : 'none';
-  pdfCanvas.style.touchAction = ta;
-  inkCanvas.style.touchAction = ta;
+  // キャンバス上は常に none（手ツール時はJSでscrollを更新）
+  pdfCanvas.style.touchAction = 'none';
+  inkCanvas.style.touchAction = 'none';
 
   stageWrap.classList.toggle('grabbing', tool==='hand' && state.isHandPanning);
 }
@@ -228,7 +229,8 @@ function drawLine(ctx,a,b,opt){
 }
 function eraseLine(ctx,a,b,esize){
   ctx.save(); ctx.globalCompositeOperation='destination-out';
-  drawLine(ctx,a,b,{color:'#000', size:esize||state.size*2, pressure:true});
+  // 既定サイズを ERASER_FACTOR 倍に
+  drawLine(ctx,a,b,{color:'#000', size:esize || state.size*ERASER_FACTOR, pressure:true});
   ctx.restore();
 }
 function getLogicalPos(e){
@@ -239,8 +241,12 @@ function begin(p){ state.drawing=true; state.last=p; state.stroke=[{p,tool:state
 function move(p){
   if(!state.drawing) return;
   const a=state.last,b=p, As=scaled(a), Bs=scaled(b);
-  if(state.tool==='pen') drawLine(inkCtx,As,Bs,{pressure:true,size:state.size*state.scale,color:state.color});
-  else eraseLine(inkCtx,As,Bs,(state.size*2)*state.scale);
+  if(state.tool==='pen'){
+    drawLine(inkCtx,As,Bs,{pressure:true,size:state.size*state.scale,color:state.color});
+  }else{
+    // 消しゴムはペン太さの ERASER_FACTOR 倍
+    eraseLine(inkCtx,As,Bs,(state.size*ERASER_FACTOR)*state.scale);
+  }
   state.stroke.push({p,tool:state.tool,color:state.color,size:state.size});
   state.last=b;
 }
@@ -251,8 +257,12 @@ function redrawInk(){
   for(const h of state.history){
     for(let i=1;i<h.ops.length;i++){
       const A=h.ops[i-1],B=h.ops[i]; const a=scaled(A.p), b=scaled(B.p);
-      if(B.tool==='pen') drawLine(inkCtx,a,b,{color:A.color,size:(A.size||state.size)*state.scale});
-      else eraseLine(inkCtx,a,b,((A.size||state.size)*2)*state.scale);
+      if(B.tool==='pen'){
+        drawLine(inkCtx,a,b,{color:A.color,size:(A.size||state.size)*state.scale});
+      }else{
+        // 履歴再描画も ERASER_FACTOR 倍
+        eraseLine(inkCtx,a,b,((A.size||state.size)*ERASER_FACTOR)*state.scale);
+      }
     }
   }
 }
@@ -333,16 +343,14 @@ textLayer.addEventListener('pointerdown',(e)=>{
   createTextbox(e.clientX-r.left, e.clientY-r.top, {fontSize:+ui.fontSize.value, color:state.color});
 });
 
-// ----- 手ツール（タッチ＝ネイティブ／マウス＝ドラッグでスクロール） -----
+// ----- 手ツール（全ポインタでドラッグ＝スクロール） -----
 function canHandPanPointer(e){
-  if(state.isPinching) return false;
-  if(state.tool!=='hand') return false;
+  if(state.isPinching) return false;      // 2本指操作を優先
+  if(state.tool!=='hand') return false;   // 手ツール時のみ
   return true;
 }
-// マウスのときだけJSでドラッグスクロール（タッチはネイティブに任せる）
 stageWrap.addEventListener('pointerdown', e=>{
   if(!canHandPanPointer(e)) return;
-  if(e.pointerType!=='mouse') return; // ← タッチはネイティブスクロール
   state.isHandPanning = true;
   stageWrap.classList.add('grabbing');
   state.handStart = { x:e.clientX, y:e.clientY, sl:stageWrap.scrollLeft, st:stageWrap.scrollTop };
@@ -350,10 +358,12 @@ stageWrap.addEventListener('pointerdown', e=>{
 });
 stageWrap.addEventListener('pointermove', e=>{
   if(!state.isHandPanning) return;
+  if(state.isPinching) return; // ピンチが始まったらドラッグ停止
   const dx = e.clientX - state.handStart.x;
   const dy = e.clientY - state.handStart.y;
   stageWrap.scrollLeft = state.handStart.sl - dx;
   stageWrap.scrollTop  = state.handStart.st - dy;
+  if(e.pointerType==='touch') e.preventDefault(); // ページスクロール抑止
 });
 ['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=>{
   stageWrap.addEventListener(t, ()=>{
@@ -362,43 +372,6 @@ stageWrap.addEventListener('pointermove', e=>{
       stageWrap.classList.remove('grabbing');
     }
   });
-});
-
-// ----- Ink 入力（“ペンのみ”強化 & ポインタ指名） -----
-function isPenLike(e){
-  const isPen = e.pointerType === 'pen';
-  const isMouseOnNonTouchPC = (e.pointerType === 'mouse' && (navigator.maxTouchPoints||0) === 0);
-  return isPen || isMouseOnNonTouchPC;
-}
-inkCanvas.addEventListener('pointerdown', e => {
-  if (state.isPinching) return;
-  if (state.tool !== 'pen' && state.tool !== 'eraser') return;
-  if (state.penOnly && !isPenLike(e)) return;
-  if (state.activePointerId !== null && state.activePointerId !== e.pointerId) return;
-
-  state.activePointerId = e.pointerId;
-  state.activePointerType = e.pointerType;
-  try { inkCanvas.setPointerCapture(e.pointerId); } catch {}
-  begin(getLogicalPos(e));
-});
-inkCanvas.addEventListener('pointermove', e => {
-  if (state.isPinching) return;
-  if (state.activePointerId === null || e.pointerId !== state.activePointerId) return;
-  if (state.tool !== 'pen' && state.tool !== 'eraser') return;
-  if (state.penOnly && !isPenLike(e)) return;
-  if (state.drawing) move(getLogicalPos(e));
-});
-function finishPointer(e){
-  if (state.activePointerId !== null && e.pointerId === state.activePointerId){
-    end(); state.activePointerId=null; state.activePointerType=null;
-  }
-}
-['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t, finishPointer));
-ui.penOnly.addEventListener('change', e=>{
-  state.penOnly = e.target.checked;
-  if (state.penOnly && state.activePointerType !== 'pen') {
-    state.activePointerId=null; state.activePointerType=null; state.drawing=false;
-  }
 });
 
 // ----- ピンチズーム & 2本指パン（中心維持・しきい値±1%） -----
@@ -434,7 +407,6 @@ stageWrap.addEventListener('pointermove', e=>{
       const cx = center.x - rect.left + stageWrap.scrollLeft;
       const cy = center.y - rect.top  + stageWrap.scrollTop;
 
-      // しきい値：±1%未満 → ピンチではなく「2本指パン」とみなす
       if(delta>1.01 || delta<0.99){
         const oldScale=state.scale;
         const newScale=Math.min(3, Math.max(0.5, oldScale*delta));
@@ -446,7 +418,6 @@ stageWrap.addEventListener('pointermove', e=>{
           stageWrap.scrollTop  = Math.max(0, cy*factor - (center.y - rect.top));
         }
       }else{
-        // 2本指パン：中心の移動量ぶんスクロール
         const dxCenter = center.x - (state.lastCenter?.x ?? center.x);
         const dyCenter = center.y - (state.lastCenter?.y ?? center.y);
         stageWrap.scrollLeft -= dxCenter;
