@@ -655,27 +655,33 @@ function toBase64FromBytes(bytes){
   return btoa(bin);
 }
 async function uploadPdfToGithub(file){
+  // 目安チェック（Cloudflareのリクエスト上限 ~10MB）
+  if (file.size > 9.5 * 1024 * 1024) {
+    alert('PDFが10MBを超えています。サイズを小さくして再試行してください。');
+    return null;
+  }
+
   const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
   if (!key) { alert('キーが必要です'); return null; }
   localStorage.setItem('APP_KEY', key);
-
-  const arr = new Uint8Array(await file.arrayBuffer());
-  const b64 = toBase64FromBytes(arr);
 
   const teacher = prompt('先生名（略号）', 'tanaka') || 'teacher';
   const aid     = prompt('課題コード', 'ws1') || 'assignment';
 
   const res = await fetch(UPLOAD_ENDPOINT, {
     method: 'POST',
-    headers: { 'Content-Type':'application/json', 'X-App-Key': key },
-    body: JSON.stringify({
-      filename: file.name || 'worksheet.pdf',
-      teacher, aid,
-      pdf_base64: b64
-    })
+    headers: {
+      'X-App-Key': key,
+      'Content-Type': 'application/pdf',
+      'X-Filename': file.name || 'worksheet.pdf',
+      'X-Teacher': teacher,
+      'X-Aid': aid
+    },
+    body: file // ← そのまま送る
   });
+
   const data = await res.json();
-  if (!data.ok) throw new Error(JSON.stringify(data));
+  if (!res.ok || !data.ok) throw new Error(JSON.stringify(data));
   return data.raw_url;
 }
 ui.uploadPdfBtn.addEventListener('click', async ()=>{
@@ -709,3 +715,4 @@ window.addEventListener('resize', ()=> drawPage() );
 </script>
 </body>
 </html>
+
