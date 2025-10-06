@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>手書きメモ（PDF注釈 & 自動保存）</title>
+<title>手書きメモ（PDF注釈 & 自動保存 + 共有）</title>
 <link rel="icon" href="data:,">
 <style>
   html,body{height:100%;margin:0;font-family:system-ui}
@@ -11,8 +11,7 @@
   .toolbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;
            padding:.6rem;background:#f6f6f6;border-bottom:1px solid #ddd}
   .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
-  #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto;
-             touch-action: pan-x pan-y;}
+  #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto;touch-action: pan-x pan-y;}
   canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
   #pdfLayer{z-index:0}
   #inkLayer{z-index:1}
@@ -48,15 +47,26 @@
     <button id="handBtn" class="tool-btn" aria-pressed="false">✋移動</button>
     <label>文字 <input id="fontSize" type="number" min="10" max="96" value="18" style="width:4.5rem"></label>
     <label><input type="checkbox" id="penOnly">ペンのみ</label>
+
     <div class="sep"></div>
     <button id="undoBtn">↶Undo</button>
     <button id="redoBtn">↷Redo</button>
     <button id="clearBtn">🗑 全消去</button>
+
     <div class="sep"></div>
     <input type="file" id="pdfInput" accept="application/pdf">
     <button id="prevPage">◀</button><span id="pageInfo">-/-</span><button id="nextPage">▶</button>
     <button id="savePNGBtn">PNG保存</button>
-    <span class="hint">（自動保存ON / 再読込で復元）</span>
+
+    <div class="sep"></div>
+    <!-- ここから復活ボタン -->
+    <button id="uploadPdfBtn">📤 PDFを公開（GitHub保存）</button>
+    <input id="uploadPdfFile" type="file" accept="application/pdf" style="display:none">
+    <button id="openPdfUrlBtn">🌐 PDF URLを読み込み</button>
+    <button id="copyShareBtn">🔗 共有リンクをコピー</button>
+    <!-- ここまで復活ボタン -->
+
+    <span class="hint">（手書きは自動保存／再読込で復元）</span>
   </div>
 
   <div id="stageWrap">
@@ -68,16 +78,15 @@
 
 <script type="module">
 /* ================== 設定 ================== */
-// PDF.js（同ディレクトリに build/pdf.mjs と build/pdf.worker.mjs を置いてください）
 import * as pdfjsLib from './build/pdf.mjs';
 pdfjsLib.GlobalWorkerOptions.workerSrc = './build/pdf.worker.mjs';
 
-// Cloudflare Worker（あなたのエンドポイント）
+// Cloudflare Worker
 const UPLOAD_ENDPOINT = 'https://pdf-uploader-plain-union-c1fe.kkimura.workers.dev';
-const SAVE_ENDPOINT   = UPLOAD_ENDPOINT; // ノート保存/読込も同じエンドポイント
+const SAVE_ENDPOINT   = UPLOAD_ENDPOINT;
 const APP_KEY_PROMPT  = '先生用キー（APP_KEY）を入力してください';
 
-/* ============= 基本の参照 ============= */
+/* ============= 基本参照 ============= */
 const dpr = window.devicePixelRatio||1;
 const pdfCanvas = document.getElementById('pdfLayer');
 const inkCanvas = document.getElementById('inkLayer');
@@ -105,6 +114,11 @@ const ui = {
   savePNGBtn:document.getElementById('savePNGBtn'),
   paletteWrap:document.getElementById('palette'),
   paletteBtns:document.querySelectorAll('#palette button'),
+  // 復活ボタン
+  uploadPdfBtn:document.getElementById('uploadPdfBtn'),
+  uploadPdfFile:document.getElementById('uploadPdfFile'),
+  openPdfUrlBtn:document.getElementById('openPdfUrlBtn'),
+  copyShareBtn:document.getElementById('copyShareBtn'),
 };
 
 /* ============= 色ヘルパ ============= */
@@ -126,15 +140,12 @@ const state = {
   scale:1, baseWidth:0, baseHeight:0,
   margin:200, pdfOffsetX:0, pdfOffsetY:0,
   texts:[],
-  // ピンチ/パン
   isPinching:false, touches:new Map(), lastCenter:null, lastDist:0, rafScheduled:false,
-  // 手ツール（ドラッグでスクロール）
   isHandPanning:false, handStart:{x:0,y:0,sl:0,st:0},
-  // PDF描画
   renderTask:null, renderSeq:0,
-  // Ink ポインタ
   activePointerId:null, activePointerType:null,
-  penOnly:false
+  penOnly:false,
+  currentPdfUrl:null // 共有リンク作成に使う
 };
 
 /* ============= 先生/課題/生徒 ID ============= */
@@ -161,7 +172,6 @@ function setActiveTool(tool){
   stageWrap.classList.toggle('grabbing', tool==='hand' && state.isHandPanning);
 }
 setActiveTool('pen');
-
 function setSelectedPalette(color){
   const hex=toHexColor(color);
   state.color=hex; ui.color.value=hex;
@@ -171,12 +181,7 @@ function setSelectedPalette(color){
 setSelectedPalette(ui.color.value);
 
 /* ============= レイアウト & 描画 ============= */
-function ensureBaseSize(){
-  if(state.baseWidth && state.baseHeight) return;
-  const cssW=Math.max(600, stageWrap.clientWidth||800);
-  const cssH=Math.round(cssW*1.41421356);
-  state.baseWidth=cssW; state.baseHeight=cssH;
-}
+function ensureBaseSize(){ if(state.baseWidth && state.baseHeight) return; const cssW=Math.max(600, stageWrap.clientWidth||800); const cssH=Math.round(cssW*1.41421356); state.baseWidth=cssW; state.baseHeight=cssH; }
 function contentWidth(){ return state.baseWidth + state.margin*2; }
 function contentHeight(){ return state.baseHeight + state.margin*2; }
 
@@ -218,8 +223,7 @@ async function drawPage(){
       state.renderTask = task;
       await task.promise;
       if(seq!==state.renderSeq) return;
-    }catch(e){/* cancel時は無視 */}
-    finally{ if(seq===state.renderSeq) state.renderTask=null; pdfCtx.restore(); }
+    }catch(e){} finally{ if(seq===state.renderSeq) state.renderTask=null; pdfCtx.restore(); }
     ui.info.textContent=`${state.page}/${state.totalPages}`;
   }else{
     ui.info.textContent='—/—';
@@ -227,52 +231,22 @@ async function drawPage(){
   redrawInk();
   layoutTextboxes();
 }
-function scheduleDrawThrottle(){
-  if(state.rafScheduled) return;
-  state.rafScheduled=true;
-  requestAnimationFrame(()=>{ state.rafScheduled=false; drawPage(); });
-}
+function scheduleDrawThrottle(){ if(state.rafScheduled) return; state.rafScheduled=true; requestAnimationFrame(()=>{ state.rafScheduled=false; drawPage(); }); }
 
 /* ============= Ink（描画） ============= */
 const scaled = p=>({x:p.x*state.scale, y:p.y*state.scale, pres:p.pres});
-function drawLine(ctx,a,b,opt){
-  const pressure=b.pres??1, base=opt.size||state.size;
-  const w=opt.pressure? base*pressure: base;
-  ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle=opt.color||state.color; ctx.lineWidth=w;
-  ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-}
-function eraseLine(ctx,a,b,esize){
-  ctx.save(); ctx.globalCompositeOperation='destination-out';
-  drawLine(ctx,a,b,{color:'#000', size:esize||state.size*3, pressure:true}); // ← 消しゴムは太め
-  ctx.restore();
-}
-function getLogicalPos(e){
-  const r=inkCanvas.getBoundingClientRect();
-  return {x:(e.clientX-r.left)/state.scale, y:(e.clientY-r.top)/state.scale, pres:e.pressure>0?e.pressure:1};
-}
+function drawLine(ctx,a,b,opt){ const pressure=b.pres??1, base=opt.size||state.size; const w=opt.pressure? base*pressure: base; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle=opt.color||state.color; ctx.lineWidth=w; ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+function eraseLine(ctx,a,b,esize){ ctx.save(); ctx.globalCompositeOperation='destination-out'; drawLine(ctx,a,b,{color:'#000', size:esize||state.size*3, pressure:true}); ctx.restore(); }
+function getLogicalPos(e){ const r=inkCanvas.getBoundingClientRect(); return {x:(e.clientX-r.left)/state.scale, y:(e.clientY-r.top)/state.scale, pres:e.pressure>0?e.pressure:1}; }
 function begin(p){ state.drawing=true; state.last=p; state.stroke=[{p,tool:state.tool,color:state.color,size:state.size}]; }
-function move(p){
-  if(!state.drawing) return;
-  const a=state.last,b=p, As=scaled(a), Bs=scaled(b);
-  if(state.tool==='pen') drawLine(inkCtx,As,Bs,{pressure:true,size:state.size*state.scale,color:state.color});
-  else eraseLine(inkCtx,As,Bs,(state.size*3)*state.scale);
-  state.stroke.push({p,tool:state.tool,color:state.color,size:state.size});
-  state.last=b;
-}
-function end(){
-  if(!state.drawing) return;
-  state.drawing=false;
-  state.history.push({ops:state.stroke, page: state.pdf?state.page:1});
-  state.redoStack=[];
-  scheduleNoteSave(); // ← 保存キック
-}
+function move(p){ if(!state.drawing) return; const a=state.last,b=p, As=scaled(a), Bs=scaled(b); if(state.tool==='pen') drawLine(inkCtx,As,Bs,{pressure:true,size:state.size*state.scale,color:state.color}); else eraseLine(inkCtx,As,Bs,(state.size*3)*state.scale); state.stroke.push({p,tool:state.tool,color:state.color,size:state.size}); state.last=b; }
+function end(){ if(!state.drawing) return; state.drawing=false; state.history.push({ops:state.stroke, page: state.pdf?state.page:1}); state.redoStack=[]; scheduleNoteSave(); }
 function redrawInk(){
   inkCtx.setTransform(dpr,0,0,dpr,0,0);
   inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr);
   const curr = String(state.pdf?state.page:1);
   for(const h of state.history){
-    const onThisPage = String(h.page||1)===curr;
-    if(!onThisPage) continue;
+    if(String(h.page||1)!==curr) continue;
     for(let i=1;i<h.ops.length;i++){
       const A=h.ops[i-1],B=h.ops[i]; const a=scaled(A.p), b=scaled(B.p);
       if(B.tool==='pen') drawLine(inkCtx,a,b,{color:A.color,size:(A.size||state.size)*state.scale});
@@ -285,14 +259,13 @@ function redrawInk(){
 function layoutTextboxes(){
   const curr=String(state.pdf?state.page:1);
   for(const t of state.texts){
-    const {el,page,fontSize,color,x,y}=t;
-    const onThisPage = String(page||1)===curr;
-    el.style.display = onThisPage ? 'block' : 'none';
+    const onThisPage = String(t.page||1)===curr;
+    t.el.style.display = onThisPage ? 'block' : 'none';
     if(!onThisPage) continue;
-    el.style.left=(x*state.scale)+'px';
-    el.style.top =(y*state.scale)+'px';
-    el.style.fontSize=(fontSize*state.scale)+'px';
-    el.style.color=color;
+    t.el.style.left=(t.x*state.scale)+'px';
+    t.el.style.top =(t.y*state.scale)+'px';
+    t.el.style.fontSize=(t.fontSize*state.scale)+'px';
+    t.el.style.color=t.color;
   }
 }
 function createTextbox(xCss,yCss,opts={}){
@@ -316,11 +289,7 @@ function createTextbox(xCss,yCss,opts={}){
   if(opts.focus!==false) el.focus(); else el.classList.remove('sel');
   layoutTextboxes(); return item;
 }
-function selectTextbox(item){
-  document.querySelectorAll('.textbox.sel').forEach(n=>n.classList.remove('sel'));
-  item.el.classList.add('sel');
-  ui.color.value=item.color; setSelectedPalette(item.color); ui.fontSize.value=String(item.fontSize);
-}
+function selectTextbox(item){ document.querySelectorAll('.textbox.sel').forEach(n=>n.classList.remove('sel')); item.el.classList.add('sel'); ui.color.value=item.color; setSelectedPalette(item.color); ui.fontSize.value=String(item.fontSize); }
 function removeTextbox(item){ const i=state.texts.indexOf(item); if(i>=0) state.texts.splice(i,1); item.el.remove(); }
 
 /* ============= UI events ============= */
@@ -341,6 +310,7 @@ ui.pdfInput.onchange=async e=>{
     const buf=await f.arrayBuffer();
     state.pdf=await pdfjsLib.getDocument({data:buf}).promise;
     state.totalPages=state.pdf.numPages; state.page=1;
+    state.currentPdfUrl=null; // ローカル読み込みなので共有URLは未設定
     await drawPage();
   }catch(err){ console.error(err); alert('PDF読み込み失敗: '+(err.message||err)); }
 };
@@ -355,145 +325,26 @@ textLayer.addEventListener('pointerdown',(e)=>{
 });
 
 /* ============= 手ツール：スクロール ============= */
-function canHandPanPointer(e){
-  if(state.isPinching) return false;
-  if(state.tool!=='hand') return false;
-  return true;
-}
-stageWrap.addEventListener('pointerdown', e=>{
-  if(!canHandPanPointer(e)) return;
-  state.isHandPanning = true;
-  stageWrap.classList.add('grabbing');
-  state.handStart = { x:e.clientX, y:e.clientY, sl:stageWrap.scrollLeft, st:stageWrap.scrollTop };
-  try{ stageWrap.setPointerCapture(e.pointerId); }catch{}
-});
-stageWrap.addEventListener('pointermove', e=>{
-  if(!state.isHandPanning) return;
-  const dx = e.clientX - state.handStart.x;
-  const dy = e.clientY - state.handStart.y;
-  stageWrap.scrollLeft = state.handStart.sl - dx;
-  stageWrap.scrollTop  = state.handStart.st - dy;
-});
-['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=>{
-  stageWrap.addEventListener(t, ()=>{
-    if(state.isHandPanning){
-      state.isHandPanning=false;
-      stageWrap.classList.remove('grabbing');
-    }
-  });
-});
+function canHandPanPointer(e){ if(state.isPinching) return false; if(state.tool!=='hand') return false; return true; }
+stageWrap.addEventListener('pointerdown', e=>{ if(!canHandPanPointer(e)) return; state.isHandPanning = true; stageWrap.classList.add('grabbing'); state.handStart = { x:e.clientX, y:e.clientY, sl:stageWrap.scrollLeft, st:stageWrap.scrollTop }; try{ stageWrap.setPointerCapture(e.pointerId); }catch{} });
+stageWrap.addEventListener('pointermove', e=>{ if(!state.isHandPanning) return; const dx = e.clientX - state.handStart.x; const dy = e.clientY - state.handStart.y; stageWrap.scrollLeft = state.handStart.sl - dx; stageWrap.scrollTop  = state.handStart.st - dy; });
+['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=>{ stageWrap.addEventListener(t, ()=>{ if(state.isHandPanning){ state.isHandPanning=false; stageWrap.classList.remove('grabbing'); } }); });
 
 /* ============= Ink 入力（ペンのみ強化） ============= */
-function isPenLike(e){
-  const isPen = e.pointerType === 'pen';
-  const isMouseOnNonTouchPC = (e.pointerType === 'mouse' && (navigator.maxTouchPoints||0) === 0);
-  return isPen || isMouseOnNonTouchPC;
-}
-inkCanvas.addEventListener('pointerdown', e => {
-  if (state.isPinching) return;
-  if (state.tool !== 'pen' && state.tool !== 'eraser') return;
-  if (state.penOnly && !isPenLike(e)) return;
-  if (state.activePointerId !== null && state.activePointerId !== e.pointerId) return;
-
-  state.activePointerId = e.pointerId;
-  state.activePointerType = e.pointerType;
-  try { inkCanvas.setPointerCapture(e.pointerId); } catch {}
-  begin(getLogicalPos(e));
-});
-inkCanvas.addEventListener('pointermove', e => {
-  if (state.isPinching) return;
-  if (state.activePointerId === null || e.pointerId !== state.activePointerId) return;
-  if (state.tool !== 'pen' && state.tool !== 'eraser') return;
-  if (state.penOnly && !isPenLike(e)) return;
-  if (state.drawing) move(getLogicalPos(e));
-});
-function finishPointer(e){
-  if (state.activePointerId !== null && e.pointerId === state.activePointerId){
-    end(); state.activePointerId=null; state.activePointerType=null;
-  }
-}
+function isPenLike(e){ const isPen = e.pointerType === 'pen'; const isMouseOnNonTouchPC = (e.pointerType === 'mouse' && (navigator.maxTouchPoints||0) === 0); return isPen || isMouseOnNonTouchPC; }
+inkCanvas.addEventListener('pointerdown', e => { if (state.isPinching) return; if (state.tool !== 'pen' && state.tool !== 'eraser') return; if (state.penOnly && !isPenLike(e)) return; if (state.activePointerId !== null && state.activePointerId !== e.pointerId) return; state.activePointerId = e.pointerId; state.activePointerType = e.pointerType; try { inkCanvas.setPointerCapture(e.pointerId); } catch {} begin(getLogicalPos(e)); });
+inkCanvas.addEventListener('pointermove', e => { if (state.isPinching) return; if (state.activePointerId === null || e.pointerId !== state.activePointerId) return; if (state.tool !== 'pen' && state.tool !== 'eraser') return; if (state.penOnly && !isPenLike(e)) return; if (state.drawing) move(getLogicalPos(e)); });
+function finishPointer(e){ if (state.activePointerId !== null && e.pointerId === state.activePointerId){ end(); state.activePointerId=null; state.activePointerType=null; } }
 ['pointerup','pointercancel','pointerout','pointerleave'].forEach(t=> inkCanvas.addEventListener(t, finishPointer));
-ui.penOnly.addEventListener('change', e=>{
-  state.penOnly = e.target.checked;
-  if (state.penOnly && state.activePointerType !== 'pen') {
-    state.activePointerId=null; state.activePointerType=null; state.drawing=false;
-  }
-});
+ui.penOnly.addEventListener('change', e=>{ state.penOnly = e.target.checked; if (state.penOnly && state.activePointerType !== 'pen') { state.activePointerId=null; state.activePointerType=null; state.drawing=false; } });
 
 /* ============= ピンチズーム & 2本指パン ============= */
 function pointerPos(e){ return {x:e.clientX, y:e.clientY}; }
-function onTouchPointersChanged(){
-  const touches=[...state.touches.values()];
-  if(touches.length>=2){
-    state.isPinching=true;
-    const [a,b]=touches; const dx=b.x-a.x, dy=b.y-a.y;
-    state.lastDist=Math.hypot(dx,dy);
-    state.lastCenter={x:(a.x+b.x)/2, y:(a.y+b.y)/2};
-  }else{
-    state.isPinching=false;
-  }
-}
-stageWrap.addEventListener('pointerdown', e=>{
-  if(e.pointerType==='touch'){
-    state.touches.set(e.pointerId, pointerPos(e));
-    onTouchPointersChanged();
-  }
-});
-stageWrap.addEventListener('pointermove', e=>{
-  if(e.pointerType==='touch' && state.touches.has(e.pointerId)){
-    state.touches.set(e.pointerId, pointerPos(e));
-    if(state.touches.size>=2){
-      const t=[...state.touches.values()];
-      const [a,b]=t; const dx=b.x-a.x, dy=b.y-a.y;
-      const newDist=Math.hypot(dx,dy);
-      const center={x:(a.x+b.x)/2, y:(a.y+b.y)/2};
-      const delta=newDist/(state.lastDist||newDist);
-
-      const rect=stageWrap.getBoundingClientRect();
-      const cx = center.x - rect.left + stageWrap.scrollLeft;
-      const cy = center.y - rect.top  + stageWrap.scrollTop;
-
-      if(delta>1.01 || delta<0.99){
-        const oldScale=state.scale;
-        const newScale=Math.min(3, Math.max(0.5, oldScale*delta));
-        if(newScale!==oldScale){
-          state.scale=newScale;
-          scheduleDrawThrottle();
-          const factor=newScale/oldScale;
-          stageWrap.scrollLeft = Math.max(0, cx*factor - (center.x - rect.left));
-          stageWrap.scrollTop  = Math.max(0, cy*factor - (center.y - rect.top));
-        }
-      }else{
-        const dxCenter = center.x - (state.lastCenter?.x ?? center.x);
-        const dyCenter = center.y - (state.lastCenter?.y ?? center.y);
-        stageWrap.scrollLeft -= dxCenter;
-        stageWrap.scrollTop  -= dyCenter;
-      }
-
-      state.lastDist=newDist; state.lastCenter=center;
-      e.preventDefault();
-    }
-  }
-});
-['pointerup','pointercancel','pointerleave','pointerout'].forEach(type=>{
-  stageWrap.addEventListener(type, e=>{
-    if(e.pointerType==='touch'){
-      state.touches.delete(e.pointerId);
-      onTouchPointersChanged();
-    }
-  });
-});
-let lastTap=0;
-stageWrap.addEventListener('pointerdown', e=>{
-  if(e.pointerType==='touch' && !state.isPinching){
-    const now=Date.now();
-    if(now-lastTap<300){
-      state.scale=1;
-      drawPage().then(()=> stageWrap.scrollTo({left:0,top:0,behavior:'auto'}));
-    }
-    lastTap=now;
-  }
-});
+function onTouchPointersChanged(){ const touches=[...state.touches.values()]; if(touches.length>=2){ state.isPinching=true; const [a,b]=touches; const dx=b.x-a.x, dy=b.y-a.y; state.lastDist=Math.hypot(dx,dy); state.lastCenter={x:(a.x+b.x)/2, y:(a.y+b.y)/2}; } else { state.isPinching=false; } }
+stageWrap.addEventListener('pointerdown', e=>{ if(e.pointerType==='touch'){ state.touches.set(e.pointerId, pointerPos(e)); onTouchPointersChanged(); } });
+stageWrap.addEventListener('pointermove', e=>{ if(e.pointerType==='touch' && state.touches.has(e.pointerId)){ state.touches.set(e.pointerId, pointerPos(e)); if(state.touches.size>=2){ const t=[...state.touches.values()]; const [a,b]=t; const dx=b.x-a.x, dy=b.y-a.y; const newDist=Math.hypot(dx,dy); const center={x:(a.x+b.x)/2, y:(a.y+b.y)/2}; const delta=newDist/(state.lastDist||newDist); const rect=stageWrap.getBoundingClientRect(); const cx = center.x - rect.left + stageWrap.scrollLeft; const cy = center.y - rect.top  + stageWrap.scrollTop; if(delta>1.01 || delta<0.99){ const oldScale=state.scale; const newScale=Math.min(3, Math.max(0.5, oldScale*delta)); if(newScale!==oldScale){ state.scale=newScale; scheduleDrawThrottle(); const factor=newScale/oldScale; stageWrap.scrollLeft = Math.max(0, cx*factor - (center.x - rect.left)); stageWrap.scrollTop  = Math.max(0, cy*factor - (center.y - rect.top)); } }else{ const dxCenter = center.x - (state.lastCenter?.x ?? center.x); const dyCenter = center.y - (state.lastCenter?.y ?? center.y); stageWrap.scrollLeft -= dxCenter; stageWrap.scrollTop  -= dyCenter; } state.lastDist=newDist; state.lastCenter=center; e.preventDefault(); } } });
+['pointerup','pointercancel','pointerleave','pointerout'].forEach(type=>{ stageWrap.addEventListener(type, e=>{ if(e.pointerType==='touch'){ state.touches.delete(e.pointerId); onTouchPointersChanged(); } }); });
+let lastTap=0; stageWrap.addEventListener('pointerdown', e=>{ if(e.pointerType==='touch' && !state.isPinching){ const now=Date.now(); if(now-lastTap<300){ state.scale=1; drawPage().then(()=> stageWrap.scrollTo({left:0,top:0,behavior:'auto'})); } lastTap=now; } });
 
 /* ============= PNG保存（見た目合成） ============= */
 function savePNG(){
@@ -516,11 +367,9 @@ ui.savePNGBtn.onclick=savePNG;
 /* ============= ノート保存/復元 ============= */
 let saveTimer=null;
 function scheduleNoteSave(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveNoteNow, 1000); }
-
 async function saveNoteNow(){
   const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
   if(!key) return; localStorage.setItem('APP_KEY', key);
-
   const snap = makeNoteSnapshot();
   try{
     const r = await fetch(`${SAVE_ENDPOINT}?op=note`, {
@@ -538,7 +387,6 @@ async function saveNoteNow(){
     if(!r.ok){ console.warn('save failed', r.status, await r.text()); }
   }catch(e){ console.warn('save error', e); }
 }
-
 function makeNoteSnapshot(){
   const strokes = state.history.map(h=>({
     page: h.page || 1,
@@ -555,14 +403,12 @@ function makeNoteSnapshot(){
   return { noteV:1, strokes, texts };
 }
 function applyNoteSnapshot(snap){
-  // Ink
   state.history = [];
   for(const s of (snap.strokes||[])){
     const ops = s.points.map(p=>({ p:{x:p[0], y:p[1], pres:p[2]??1}, tool:s.tool, color:s.color, size:s.size }));
     state.history.push({ ops, page:s.page||1 });
   }
   redrawInk();
-  // Texts
   for(const t of [...state.texts]) t.el.remove();
   state.texts=[];
   for(const t of (snap.texts||[])){
@@ -576,7 +422,6 @@ function applyNoteSnapshot(snap){
 async function loadNoteIfAny(){
   const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
   if(!key) return; localStorage.setItem('APP_KEY', key);
-
   try{
     const u = new URL(SAVE_ENDPOINT);
     u.searchParams.set('op','note');
@@ -591,19 +436,94 @@ async function loadNoteIfAny(){
   }catch(e){ console.warn('load note err', e); }
 }
 
-/* ============= 起動時：PDF自動読込（?pdf=） ============= */
-async function tryAutoLoadPDF(){
-  const q = new URLSearchParams(location.search);
-  const url = q.get('pdf');
-  if(!url) return;
+/* ============= PDFのURL読み込み・共有 ============= */
+function buildShareUrl(pdfUrl){
+  const base = location.origin + location.pathname;
+  const q = new URLSearchParams();
+  q.set('pdf', pdfUrl);
+  q.set('t', teacherId); q.set('a', assignmentId); q.set('s', studentId);
+  return `${base}?${q.toString()}`;
+}
+async function copyText(t){ try{ await navigator.clipboard.writeText(t); alert('コピーしました！'); }catch{ prompt('この文字列をコピーしてください', t); } }
+
+async function loadPdfFromUrl(url){
   try{
     const res = await fetch(url, {mode:'cors'});
     if(!res.ok) throw new Error('fetch fail');
     const buf = await res.arrayBuffer();
     state.pdf = await pdfjsLib.getDocument({data:buf}).promise;
     state.totalPages = state.pdf.numPages; state.page = 1;
+    state.currentPdfUrl = url;
+    // アドレスバーも更新（履歴は汚さない）
+    const qs = new URLSearchParams(location.search);
+    qs.set('pdf', url); qs.set('t', teacherId); qs.set('a', assignmentId); qs.set('s', studentId);
+    history.replaceState(null,'', location.pathname + '?' + qs.toString());
     await drawPage();
-  }catch(e){ console.warn('auto pdf load failed', e); }
+  }catch(e){ alert('PDFの読み込みに失敗しました'); console.warn(e); }
+}
+
+ui.openPdfUrlBtn.onclick = async ()=>{
+  const u = prompt('読み込むPDFのURL（raw.githubusercontent.com など）を入力');
+  if(!u) return;
+  await loadPdfFromUrl(u.trim());
+};
+
+ui.copyShareBtn.onclick = async ()=>{
+  if(!state.currentPdfUrl){
+    alert('共有リンクを作るには、PDFをURLから読み込むか、GitHubに公開してください。');
+    return;
+  }
+  const link = buildShareUrl(state.currentPdfUrl);
+  copyText(link);
+};
+
+/* ============= GitHub にPDF公開（Worker経由） ============= */
+async function uploadPdfToGithub(file){
+  if (file.size > 9.5 * 1024 * 1024) { alert('PDFが10MBを超えています'); return null; }
+  const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
+  if (!key) return null;
+  localStorage.setItem('APP_KEY', key);
+  try{
+    const res = await fetch(UPLOAD_ENDPOINT, {
+      method:'POST',
+      headers:{
+        'Content-Type':'application/pdf',
+        'X-App-Key': key,
+        'X-Filename': file.name || 'worksheet.pdf',
+        'X-Teacher': teacherId,
+        'X-Aid': assignmentId
+      },
+      body:file
+    });
+    const txt = await res.text();
+    const data = JSON.parse(txt);
+    if(!res.ok || !data.ok){ throw new Error(txt); }
+    state.currentPdfUrl = data.raw_url || null;
+    const share = state.currentPdfUrl ? buildShareUrl(state.currentPdfUrl) : '';
+    alert('PDFを公開しました！\n' + (share ? '共有リンクをコピーします。' : ''));
+    if(share) copyText(share);
+    return data.raw_url || null;
+  }catch(e){
+    console.error('UPLOAD_ERROR', e);
+    alert('アップロードに失敗: ' + String(e));
+    return null;
+  }
+}
+ui.uploadPdfBtn.onclick = ()=> ui.uploadPdfFile.click();
+ui.uploadPdfFile.onchange = async e=>{
+  const f=e.target.files?.[0];
+  if(!f) return;
+  await uploadPdfToGithub(f);
+  e.target.value='';
+};
+
+/* ============= 起動時：?pdf= があれば自動読込 ============= */
+async function tryAutoLoadPDF(){
+  const q = new URLSearchParams(location.search);
+  const url = q.get('pdf');
+  if(!url) return;
+  state.currentPdfUrl = url;
+  await loadPdfFromUrl(url);
 }
 
 /* ============= 初期化 ============= */
