@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>手書きメモ（PDF・URL共有・GitHub公開対応）</title>
+<title>手書きメモ（PDF注釈 & 自動保存）</title>
 <link rel="icon" href="data:,">
 <style>
   html,body{height:100%;margin:0;font-family:system-ui}
@@ -11,7 +11,8 @@
   .toolbar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;
            padding:.6rem;background:#f6f6f6;border-bottom:1px solid #ddd}
   .toolbar>*{background:#fff;border:1px solid #ddd;border-radius:.5rem;padding:.3rem .6rem}
-  #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto;touch-action: pan-x pan-y;}
+  #stageWrap{position:relative;height:100%;min-height:360px;background:#fff;overflow:auto;
+             touch-action: pan-x pan-y;}
   canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
   #pdfLayer{z-index:0}
   #inkLayer{z-index:1}
@@ -24,6 +25,8 @@
            white-space:pre-wrap;word-break:break-word;background:transparent;cursor:text;user-select:text}
   .textbox.sel{border-color:#6a9bff;box-shadow:0 0 0 2px #cfe0ff inset;background:rgba(255,255,255,.2)}
   .grabbing{cursor:grabbing;}
+  .sep{width:1px;height:1.6rem;background:#ddd;margin:0 .25rem}
+  .hint{font-size:.85rem;color:#666;border:none;background:transparent}
 </style>
 </head>
 <body>
@@ -45,21 +48,15 @@
     <button id="handBtn" class="tool-btn" aria-pressed="false">✋移動</button>
     <label>文字 <input id="fontSize" type="number" min="10" max="96" value="18" style="width:4.5rem"></label>
     <label><input type="checkbox" id="penOnly">ペンのみ</label>
+    <div class="sep"></div>
     <button id="undoBtn">↶Undo</button>
     <button id="redoBtn">↷Redo</button>
     <button id="clearBtn">🗑 全消去</button>
-
+    <div class="sep"></div>
     <input type="file" id="pdfInput" accept="application/pdf">
     <button id="prevPage">◀</button><span id="pageInfo">-/-</span><button id="nextPage">▶</button>
-    <button id="scrollUp">▲</button><button id="scrollDown">▼</button>
     <button id="savePNGBtn">PNG保存</button>
-
-    <!-- URL共有 -->
-    <button id="shareLinkBtn">🔗 共有リンクを作成</button>
-    <button id="openLinkBtn">🔗 共有リンクを読込</button>
-
-    <!-- GitHub公開（Cloudflare Worker 経由） -->
-    <button id="uploadPdfBtn">📤 PDFを公開（GitHub保存）</button>
+    <span class="hint">（自動保存ON / 再読込で復元）</span>
   </div>
 
   <div id="stageWrap">
@@ -70,16 +67,17 @@
 </div>
 
 <script type="module">
-/* ===== 依存読み込み ===== */
+/* ================== 設定 ================== */
+// PDF.js（同ディレクトリに build/pdf.mjs と build/pdf.worker.mjs を置いてください）
 import * as pdfjsLib from './build/pdf.mjs';
 pdfjsLib.GlobalWorkerOptions.workerSrc = './build/pdf.worker.mjs';
-import pako from 'https://esm.sh/pako@2.1.0';
 
-/* ===== あなたのCloudflare Worker（PDF公開先） ===== */
-const UPLOAD_ENDPOINT = "https://pdf-uploader-plain-union-c1fe.kkimura.workers.dev";
-const APP_KEY_PROMPT  = "先生用キー（合言葉）を入力してください";
+// Cloudflare Worker（あなたのエンドポイント）
+const UPLOAD_ENDPOINT = 'https://pdf-uploader-plain-union-c1fe.kkimura.workers.dev';
+const SAVE_ENDPOINT   = UPLOAD_ENDPOINT; // ノート保存/読込も同じエンドポイント
+const APP_KEY_PROMPT  = '先生用キー（APP_KEY）を入力してください';
 
-/* ====== 基本セットアップ ====== */
+/* ============= 基本の参照 ============= */
 const dpr = window.devicePixelRatio||1;
 const pdfCanvas = document.getElementById('pdfLayer');
 const inkCanvas = document.getElementById('inkLayer');
@@ -107,13 +105,9 @@ const ui = {
   savePNGBtn:document.getElementById('savePNGBtn'),
   paletteWrap:document.getElementById('palette'),
   paletteBtns:document.querySelectorAll('#palette button'),
-  scrollUp:document.getElementById('scrollUp'),
-  scrollDown:document.getElementById('scrollDown'),
-  shareBtn:document.getElementById('shareLinkBtn'),
-  openShareBtn:document.getElementById('openLinkBtn'),
-  uploadPdfBtn:document.getElementById('uploadPdfBtn'),
 };
 
+/* ============= 色ヘルパ ============= */
 function toHexColor(c){
   if(!c) return '#111111';
   c=String(c).trim().toLowerCase();
@@ -124,6 +118,7 @@ function toHexColor(c){
   return NAME[c]||'#111111';
 }
 
+/* ============= 状態 ============= */
 const state = {
   tool:'pen', color:toHexColor(ui.color.value), size:+ui.size.value,
   drawing:false, last:null, stroke:[], history:[], redoStack:[],
@@ -131,14 +126,31 @@ const state = {
   scale:1, baseWidth:0, baseHeight:0,
   margin:200, pdfOffsetX:0, pdfOffsetY:0,
   texts:[],
+  // ピンチ/パン
   isPinching:false, touches:new Map(), lastCenter:null, lastDist:0, rafScheduled:false,
-  isHandPanning:false, handStart: {x:0,y:0,sl:0,st:0},
+  // 手ツール（ドラッグでスクロール）
+  isHandPanning:false, handStart:{x:0,y:0,sl:0,st:0},
+  // PDF描画
   renderTask:null, renderSeq:0,
+  // Ink ポインタ
   activePointerId:null, activePointerType:null,
-  penOnly:false,
+  penOnly:false
 };
 
-/* ===== ツール切替 ===== */
+/* ============= 先生/課題/生徒 ID ============= */
+let teacherId, assignmentId, studentId;
+function ensureIDs(){
+  const q = new URLSearchParams(location.search);
+  teacherId    = q.get('t') || localStorage.getItem('teacherId') || prompt('先生名（略号）','tanaka');
+  assignmentId = q.get('a') || localStorage.getItem('aid')       || prompt('課題コード','ws1');
+  studentId    = q.get('s') || localStorage.getItem('studentId') || prompt('生徒ID（学籍番号など）','s001');
+  localStorage.setItem('teacherId', teacherId);
+  localStorage.setItem('aid', assignmentId);
+  localStorage.setItem('studentId', studentId);
+}
+ensureIDs();
+
+/* ============= ツール切替 ============= */
 function setActiveTool(tool){
   state.tool=tool;
   const map={pen:ui.penBtn,eraser:ui.eraserBtn,text:ui.textBtn,hand:ui.handBtn};
@@ -158,7 +170,7 @@ function setSelectedPalette(color){
 }
 setSelectedPalette(ui.color.value);
 
-/* ===== レイアウト ===== */
+/* ============= レイアウト & 描画 ============= */
 function ensureBaseSize(){
   if(state.baseWidth && state.baseHeight) return;
   const cssW=Math.max(600, stageWrap.clientWidth||800);
@@ -168,7 +180,6 @@ function ensureBaseSize(){
 function contentWidth(){ return state.baseWidth + state.margin*2; }
 function contentHeight(){ return state.baseHeight + state.margin*2; }
 
-/* ===== 描画 ===== */
 async function drawPage(){
   ensureBaseSize();
   if(state.renderTask){ try{ state.renderTask.cancel(); }catch{} state.renderTask=null; }
@@ -207,7 +218,8 @@ async function drawPage(){
       state.renderTask = task;
       await task.promise;
       if(seq!==state.renderSeq) return;
-    }catch(e){} finally{ if(seq===state.renderSeq) state.renderTask=null; pdfCtx.restore(); }
+    }catch(e){/* cancel時は無視 */}
+    finally{ if(seq===state.renderSeq) state.renderTask=null; pdfCtx.restore(); }
     ui.info.textContent=`${state.page}/${state.totalPages}`;
   }else{
     ui.info.textContent='—/—';
@@ -221,7 +233,7 @@ function scheduleDrawThrottle(){
   requestAnimationFrame(()=>{ state.rafScheduled=false; drawPage(); });
 }
 
-/* ===== Ink ===== */
+/* ============= Ink（描画） ============= */
 const scaled = p=>({x:p.x*state.scale, y:p.y*state.scale, pres:p.pres});
 function drawLine(ctx,a,b,opt){
   const pressure=b.pres??1, base=opt.size||state.size;
@@ -231,7 +243,7 @@ function drawLine(ctx,a,b,opt){
 }
 function eraseLine(ctx,a,b,esize){
   ctx.save(); ctx.globalCompositeOperation='destination-out';
-  drawLine(ctx,a,b,{color:'#000', size:esize||state.size*4, pressure:true}); // ← 消しゴムはペンの約4倍
+  drawLine(ctx,a,b,{color:'#000', size:esize||state.size*3, pressure:true}); // ← 消しゴムは太め
   ctx.restore();
 }
 function getLogicalPos(e){
@@ -243,24 +255,33 @@ function move(p){
   if(!state.drawing) return;
   const a=state.last,b=p, As=scaled(a), Bs=scaled(b);
   if(state.tool==='pen') drawLine(inkCtx,As,Bs,{pressure:true,size:state.size*state.scale,color:state.color});
-  else eraseLine(inkCtx,As,Bs,(state.size*4)*state.scale);
+  else eraseLine(inkCtx,As,Bs,(state.size*3)*state.scale);
   state.stroke.push({p,tool:state.tool,color:state.color,size:state.size});
   state.last=b;
 }
-function end(){ if(!state.drawing) return; state.drawing=false; state.history.push({ops:state.stroke}); state.redoStack=[]; }
+function end(){
+  if(!state.drawing) return;
+  state.drawing=false;
+  state.history.push({ops:state.stroke, page: state.pdf?state.page:1});
+  state.redoStack=[];
+  scheduleNoteSave(); // ← 保存キック
+}
 function redrawInk(){
   inkCtx.setTransform(dpr,0,0,dpr,0,0);
   inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr);
+  const curr = String(state.pdf?state.page:1);
   for(const h of state.history){
+    const onThisPage = String(h.page||1)===curr;
+    if(!onThisPage) continue;
     for(let i=1;i<h.ops.length;i++){
       const A=h.ops[i-1],B=h.ops[i]; const a=scaled(A.p), b=scaled(B.p);
       if(B.tool==='pen') drawLine(inkCtx,a,b,{color:A.color,size:(A.size||state.size)*state.scale});
-      else eraseLine(inkCtx,a,b,((A.size||state.size)*4)*state.scale);
+      else eraseLine(inkCtx,a,b,((A.size||state.size)*3)*state.scale);
     }
   }
 }
 
-/* ===== テキスト ===== */
+/* ============= テキスト ============= */
 function layoutTextboxes(){
   const curr=String(state.pdf?state.page:1);
   for(const t of state.texts){
@@ -284,13 +305,16 @@ function createTextbox(xCss,yCss,opts={}){
   el.style.fontSize=(fontSize*state.scale)+'px'; el.style.color=color;
   el.dataset.color=color; el.dataset.fontSize=String(fontSize); el.dataset.page=String(pageIndex);
   el.addEventListener('focus',()=>selectTextbox(item));
-  el.addEventListener('blur',()=>el.classList.remove('sel'));
-  el.addEventListener('keydown',(e)=>{ if((e.key==='Backspace'||e.key==='Delete') && el.textContent===''){ e.preventDefault(); removeTextbox(item);} });
+  el.addEventListener('blur',()=>{ el.classList.remove('sel'); scheduleNoteSave(); });
+  el.addEventListener('input',()=> scheduleNoteSave());
+  el.addEventListener('keydown',(e)=>{ if((e.key==='Backspace'||e.key==='Delete') && el.textContent===''){ e.preventDefault(); removeTextbox(item); scheduleNoteSave(); } });
   let dragging=false,sx=0,sy=0;
   el.addEventListener('pointerdown',(e)=>{ dragging=true; el.setPointerCapture(e.pointerId); sx=e.clientX; sy=e.clientY; selectTextbox(item); });
   el.addEventListener('pointermove',(e)=>{ if(!dragging) return; const dx=e.clientX-sx, dy=e.clientY-sy; item.x+=dx/state.scale; item.y+=dy/state.scale; el.style.left=(item.x*state.scale)+'px'; el.style.top=(item.y*state.scale)+'px'; sx=e.clientX; sy=e.clientY; });
   ['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=> el.addEventListener(t, ()=> dragging=false ));
-  textLayer.appendChild(el); el.focus(); layoutTextboxes(); return item;
+  textLayer.appendChild(el);
+  if(opts.focus!==false) el.focus(); else el.classList.remove('sel');
+  layoutTextboxes(); return item;
 }
 function selectTextbox(item){
   document.querySelectorAll('.textbox.sel').forEach(n=>n.classList.remove('sel'));
@@ -299,39 +323,18 @@ function selectTextbox(item){
 }
 function removeTextbox(item){ const i=state.texts.indexOf(item); if(i>=0) state.texts.splice(i,1); item.el.remove(); }
 
-function exportTextsToJSON(){
-  return state.texts.map(t=>({
-    x:t.x,y:t.y,fontSize:t.fontSize,color:t.color,page:t.page,
-    text: t.el.innerText || ''
-  }));
-}
-function restoreTextboxesFromJSON(arr){
-  // 既存削除
-  for(const t of state.texts){ t.el.remove(); }
-  state.texts=[];
-  if(!Array.isArray(arr)) return;
-  for(const t of arr){
-    const item=createTextbox((t.x||0)*state.scale,(t.y||0)*state.scale,{fontSize:+t.fontSize||18,color:t.color||'#111'});
-    item.x=+t.x||0; item.y=+t.y||0; item.fontSize=+t.fontSize||18; item.color=t.color||'#111'; item.page=+t.page||1;
-    item.el.innerText = t.text||'';
-    item.el.dataset.page=String(item.page);
-    item.el.classList.remove('sel');
-  }
-  layoutTextboxes();
-}
-
-/* ===== UI events ===== */
+/* ============= UI events ============= */
 ui.color.addEventListener('input', ()=> setSelectedPalette(ui.color.value));
 ui.paletteWrap.addEventListener('click',(e)=>{ const b=e.target.closest('button[data-color]'); if(!b) return; setSelectedPalette(b.dataset.color); });
 ui.size.addEventListener('input', ()=> state.size=+ui.size.value);
-ui.fontSize.addEventListener('input', ()=>{ const sel=document.querySelector('.textbox.sel'); if(!sel) return; const item=state.texts.find(t=>t.el===sel); if(!item) return; item.fontSize=+ui.fontSize.value; layoutTextboxes(); });
+ui.fontSize.addEventListener('input', ()=>{ const sel=document.querySelector('.textbox.sel'); if(!sel) return; const item=state.texts.find(t=>t.el===sel); if(!item) return; item.fontSize=+ui.fontSize.value; layoutTextboxes(); scheduleNoteSave(); });
 ui.penBtn.onclick=()=>setActiveTool('pen');
 ui.eraserBtn.onclick=()=>setActiveTool('eraser');
 ui.textBtn.onclick=()=>setActiveTool('text');
 ui.handBtn.onclick=()=>setActiveTool('hand');
-ui.undoBtn.onclick=()=>{ if(state.history.length){ state.redoStack.push(state.history.pop()); redrawInk(); } };
-ui.redoBtn.onclick=()=>{ if(state.redoStack.length){ state.history.push(state.redoStack.pop()); redrawInk(); } };
-ui.clearBtn.onclick=()=>{ if(confirm('全消去しますか？')){ state.history=[]; state.redoStack=[]; inkCtx.setTransform(dpr,0,0,dpr,0,0); inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr); for(const t of state.texts)t.el.remove(); state.texts=[]; } };
+ui.undoBtn.onclick=()=>{ if(state.history.length){ state.redoStack.push(state.history.pop()); redrawInk(); scheduleNoteSave(); } };
+ui.redoBtn.onclick=()=>{ if(state.redoStack.length){ state.history.push(state.redoStack.pop()); redrawInk(); scheduleNoteSave(); } };
+ui.clearBtn.onclick=()=>{ if(confirm('全消去しますか？')){ state.history=[]; state.redoStack=[]; inkCtx.setTransform(dpr,0,0,dpr,0,0); inkCtx.clearRect(0,0,inkCanvas.width/dpr,inkCanvas.height/dpr); for(const t of state.texts)t.el.remove(); state.texts=[]; scheduleNoteSave(); } };
 ui.pdfInput.onchange=async e=>{
   const f=e.target.files?.[0]; if(!f) return;
   try{
@@ -343,17 +346,15 @@ ui.pdfInput.onchange=async e=>{
 };
 ui.prev.onclick=()=>{ if(state.pdf && state.page>1){ state.page--; drawPage(); } };
 ui.next.onclick=()=>{ if(state.pdf && state.page<state.totalPages){ state.page++; drawPage(); } };
-ui.scrollUp.onclick=()=>stageWrap.scrollBy({top:-200,behavior:'smooth'});
-ui.scrollDown.onclick=()=>stageWrap.scrollBy({top:200,behavior:'smooth'});
 
-/* テキスト作成 */
+/* ============= テキスト作成 ============= */
 textLayer.addEventListener('pointerdown',(e)=>{
   if(state.tool!=='text') return;
   const r=textLayer.getBoundingClientRect();
   createTextbox(e.clientX-r.left, e.clientY-r.top, {fontSize:+ui.fontSize.value, color:state.color});
 });
 
-/* ===== 手ツール（1本指／マウスでドラッグ＝スクロール） ===== */
+/* ============= 手ツール：スクロール ============= */
 function canHandPanPointer(e){
   if(state.isPinching) return false;
   if(state.tool!=='hand') return false;
@@ -382,7 +383,7 @@ stageWrap.addEventListener('pointermove', e=>{
   });
 });
 
-/* ===== Ink 入力（“ペンのみ”強化 & ポインタ指名） ===== */
+/* ============= Ink 入力（ペンのみ強化） ============= */
 function isPenLike(e){
   const isPen = e.pointerType === 'pen';
   const isMouseOnNonTouchPC = (e.pointerType === 'mouse' && (navigator.maxTouchPoints||0) === 0);
@@ -419,7 +420,7 @@ ui.penOnly.addEventListener('change', e=>{
   }
 });
 
-/* ===== ピンチズーム & 2本指パン ===== */
+/* ============= ピンチズーム & 2本指パン ============= */
 function pointerPos(e){ return {x:e.clientX, y:e.clientY}; }
 function onTouchPointersChanged(){
   const touches=[...state.touches.values()];
@@ -494,7 +495,7 @@ stageWrap.addEventListener('pointerdown', e=>{
   }
 });
 
-/* ===== 保存（PNG合成） ===== */
+/* ============= PNG保存（見た目合成） ============= */
 function savePNG(){
   const out=document.createElement('canvas'); out.width=pdfCanvas.width; out.height=pdfCanvas.height;
   const o=out.getContext('2d'); o.drawImage(pdfCanvas,0,0); o.drawImage(inkCanvas,0,0);
@@ -512,207 +513,106 @@ function savePNG(){
 }
 ui.savePNGBtn.onclick=savePNG;
 
-/* ====== PDF自動読込（?pdf / ?fileId / ?url） ====== */
-function parseDriveFileIdFromAny(input) {
-  if (!input) return null;
-  const s = String(input).trim();
-  if (/^[A-Za-z0-9_-]{20,}$/.test(s) && !s.includes('://')) return s;
-  const q = s.match(/[?&]id=([A-Za-z0-9_-]+)/); if (q) return q[1];
-  const d = s.match(/\/d\/([A-Za-z0-9_-]+)/);    if (d) return d[1];
-  const tail = s.split(/[/?&=]/).reverse().find(tok => /^[A-Za-z0-9_-]{20,}$/.test(tok));
-  return tail || null;
-}
-async function fetchPdfArrayBuffer({fileId, pdfUrl}){
-  let url = null;
-  if (fileId) url = `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`;
-  else if (pdfUrl) url = pdfUrl;
-  else throw new Error('no source');
-  const res = await fetch(url); if(!res.ok) throw new Error('fetch failed');
-  return await res.arrayBuffer();
-}
-async function autoLoadPdfFromQuery(){
-  const sp = new URLSearchParams(location.search);
-  let pdfUrl = sp.get('pdf');
-  let fileId = sp.get('fileId');
-  const urlParam = sp.get('url');
+/* ============= ノート保存/復元 ============= */
+let saveTimer=null;
+function scheduleNoteSave(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveNoteNow, 1000); }
 
-  if (!fileId && urlParam) {
-    const id = parseDriveFileIdFromAny(urlParam);
-    if (id) {
-      fileId = id;
-      sp.set('fileId', fileId);
-      history.replaceState(null, '', location.pathname + '?' + sp.toString() + location.hash);
-    }
-  }
-  if (!pdfUrl && !fileId) return false;
-
-  try{
-    const buf = await fetchPdfArrayBuffer({ fileId, pdfUrl });
-    state.pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    state.totalPages = state.pdf.numPages;
-    state.page = 1;
-    await drawPage();
-    return true;
-  }catch(err){
-    console.error('AutoLoad failed:', err);
-    alert('PDFの自動読み込みに失敗しました。リンクをご確認ください。');
-    return false;
-  }
-}
-
-/* ===== URL共有 (#S=…) ===== */
-function bytesToBase64Url(uint8){
-  let bin = ''; for(let i=0;i<uint8.length;i++) bin += String.fromCharCode(uint8[i]);
-  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-}
-function base64UrlToBytes(s){
-  s = s.replace(/-/g,'+').replace(/_/g,'/'); while(s.length%4) s+='=';
-  const bin = atob(s); const out = new Uint8Array(bin.length);
-  for(let i=0;i<bin.length;i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-function serializeStateForShare(){
-  const sp = new URLSearchParams(location.search);
-  const payload = {
-    v:1,
-    fileId: sp.get('fileId') || null,
-    pdf:    sp.get('pdf')    || null,
-    history: state.history,
-    texts:   exportTextsToJSON(),
-    scale:   state.scale,
-    page:    state.page
-  };
-  return JSON.stringify(payload);
-}
-function buildShareLink(){
-  const json = serializeStateForShare();
-  const deflated = pako.deflate(json);
-  const b64url   = bytesToBase64Url(deflated);
-  const base = location.origin + location.pathname;
-  const sp = new URLSearchParams(location.search);
-  const keep = new URLSearchParams();
-  if (sp.get('fileId')) keep.set('fileId', sp.get('fileId'));
-  if (sp.get('pdf'))    keep.set('pdf',    sp.get('pdf'));
-  const qs = keep.toString();
-  return base + (qs ? ('?' + qs) : '') + '#S=' + b64url;
-}
-async function tryRestoreFromHash(){
-  const m = (location.hash||'').match(/[#&]S=([^&]+)/);
-  if(!m) return false;
-  try{
-    const buf = base64UrlToBytes(m[1]);
-    const json = new TextDecoder().decode(pako.inflate(buf));
-    const data = JSON.parse(json);
-
-    if (data.fileId || data.pdf){
-      const bufPdf = await fetchPdfArrayBuffer({ fileId: data.fileId, pdfUrl: data.pdf });
-      state.pdf = await pdfjsLib.getDocument({ data: bufPdf }).promise;
-      state.totalPages = state.pdf.numPages;
-      state.page = Math.min(Math.max(1, data.page||1), state.totalPages);
-    }
-
-    state.history = Array.isArray(data.history) ? data.history : [];
-    restoreTextboxesFromJSON(Array.isArray(data.texts)?data.texts:[]);
-    state.scale = Number(data.scale || 1);
-
-    await drawPage();
-    return true;
-  }catch(e){
-    console.error(e);
-    alert('共有リンクの読み込みに失敗しました。');
-    return false;
-  }
-}
-ui.shareBtn.addEventListener('click', ()=>{
-  try{
-    const url = buildShareLink();
-    navigator.clipboard?.writeText(url);
-    alert('共有リンクをコピーしました！\n' + url);
-  }catch(e){
-    console.error(e);
-    alert('共有リンクの作成に失敗しました。');
-  }
-});
-ui.openShareBtn.addEventListener('click', async ()=>{
-  const link = prompt('共有リンク（#S= を含むURL）を貼ってください:');
-  if(!link) return;
-  history.replaceState(null, '', link);
-  await tryRestoreFromHash();
-});
-
-/* ===== GitHub公開（Worker経由） ===== */
-async function pickPdfFile(){
-  return new Promise((resolve)=>{
-    const inp = document.createElement('input');
-    inp.type = 'file'; inp.accept = 'application/pdf';
-    inp.onchange = ()=> resolve(inp.files?.[0] || null);
-    inp.click();
-  });
-}
-function toBase64FromBytes(bytes){
-  let bin=''; const arr = new Uint8Array(bytes);
-  for (let i=0;i<arr.length;i++) bin += String.fromCharCode(arr[i]);
-  return btoa(bin);
-}
-async function uploadPdfToGithub(file){
-  // 目安チェック（Cloudflareのリクエスト上限 ~10MB）
-  if (file.size > 9.5 * 1024 * 1024) {
-    alert('PDFが10MBを超えています。サイズを小さくして再試行してください。');
-    return null;
-  }
-
+async function saveNoteNow(){
   const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
-  if (!key) { alert('キーが必要です'); return null; }
-  localStorage.setItem('APP_KEY', key);
+  if(!key) return; localStorage.setItem('APP_KEY', key);
 
-  const teacher = prompt('先生名（略号）', 'tanaka') || 'teacher';
-  const aid     = prompt('課題コード', 'ws1') || 'assignment';
-
-  const res = await fetch(UPLOAD_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'X-App-Key': key,
-      'Content-Type': 'application/pdf',
-      'X-Filename': file.name || 'worksheet.pdf',
-      'X-Teacher': teacher,
-      'X-Aid': aid
-    },
-    body: file // ← そのまま送る
-  });
-
-  const data = await res.json();
-  if (!res.ok || !data.ok) throw new Error(JSON.stringify(data));
-  return data.raw_url;
-}
-ui.uploadPdfBtn.addEventListener('click', async ()=>{
+  const snap = makeNoteSnapshot();
   try{
-    const file = await pickPdfFile();
-    if(!file) return;
-    const rawUrl = await uploadPdfToGithub(file);
-    if(!rawUrl) return;
+    const r = await fetch(`${SAVE_ENDPOINT}?op=note`, {
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'X-App-Key': key,
+        'X-Op':'note',
+        'X-Teacher': teacherId,
+        'X-Aid': assignmentId,
+        'X-Student': studentId
+      },
+      body: JSON.stringify(snap)
+    });
+    if(!r.ok){ console.warn('save failed', r.status, await r.text()); }
+  }catch(e){ console.warn('save error', e); }
+}
 
-    const sp = new URLSearchParams(location.search);
-    sp.set('pdf', rawUrl);
-    history.replaceState(null, '', location.pathname + '?' + sp.toString() + location.hash);
-    await autoLoadPdfFromQuery();
-
-    const distUrl = location.origin + location.pathname + '?' + sp.toString();
-    await navigator.clipboard?.writeText(distUrl);
-    alert('PDFをGitHubに保存し、配布リンクをコピーしました！\n' + distUrl);
-  }catch(e){
-    console.error(e);
-    alert('アップロードに失敗しました。設定（APP_KEY/ALLOW_ORIGIN など）を確認してください。');
+function makeNoteSnapshot(){
+  const strokes = state.history.map(h=>({
+    page: h.page || 1,
+    tool: h.ops[0]?.tool || 'pen',
+    color: h.ops[0]?.color || state.color,
+    size:  h.ops[0]?.size  || state.size,
+    points: h.ops.map(o=>[o.p.x, o.p.y, o.p.pres ?? 1])
+  }));
+  const texts = state.texts.map(t=>({
+    page: t.page || Number(t.el.dataset.page||1),
+    x: t.x, y: t.y, fontSize: t.fontSize, color: t.color,
+    text: t.el.innerText || ''
+  }));
+  return { noteV:1, strokes, texts };
+}
+function applyNoteSnapshot(snap){
+  // Ink
+  state.history = [];
+  for(const s of (snap.strokes||[])){
+    const ops = s.points.map(p=>({ p:{x:p[0], y:p[1], pres:p[2]??1}, tool:s.tool, color:s.color, size:s.size }));
+    state.history.push({ ops, page:s.page||1 });
   }
-});
+  redrawInk();
+  // Texts
+  for(const t of [...state.texts]) t.el.remove();
+  state.texts=[];
+  for(const t of (snap.texts||[])){
+    const item = createTextbox(t.x*state.scale, t.y*state.scale, {fontSize:t.fontSize, color:t.color, focus:false});
+    item.x=t.x; item.y=t.y; item.fontSize=t.fontSize; item.color=t.color;
+    item.page = t.page||1; item.el.dataset.page=String(item.page);
+    item.el.textContent = t.text||'';
+  }
+  layoutTextboxes();
+}
+async function loadNoteIfAny(){
+  const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
+  if(!key) return; localStorage.setItem('APP_KEY', key);
 
-/* ===== 初期化 ===== */
+  try{
+    const u = new URL(SAVE_ENDPOINT);
+    u.searchParams.set('op','note');
+    u.searchParams.set('teacher', teacherId);
+    u.searchParams.set('aid', assignmentId);
+    u.searchParams.set('student', studentId);
+    u.searchParams.set('key', key);
+    const r = await fetch(u.toString(), { method:'GET' });
+    if(!r.ok) return;
+    const j = await r.json();
+    if(j && j.ok && j.note) applyNoteSnapshot(j.note);
+  }catch(e){ console.warn('load note err', e); }
+}
+
+/* ============= 起動時：PDF自動読込（?pdf=） ============= */
+async function tryAutoLoadPDF(){
+  const q = new URLSearchParams(location.search);
+  const url = q.get('pdf');
+  if(!url) return;
+  try{
+    const res = await fetch(url, {mode:'cors'});
+    if(!res.ok) throw new Error('fetch fail');
+    const buf = await res.arrayBuffer();
+    state.pdf = await pdfjsLib.getDocument({data:buf}).promise;
+    state.totalPages = state.pdf.numPages; state.page = 1;
+    await drawPage();
+  }catch(e){ console.warn('auto pdf load failed', e); }
+}
+
+/* ============= 初期化 ============= */
 window.addEventListener('load', async ()=>{
-  if (await tryRestoreFromHash()) return;
-  await autoLoadPdfFromQuery();
   await drawPage();
+  await tryAutoLoadPDF();
+  await loadNoteIfAny();
 });
 window.addEventListener('resize', ()=> drawPage() );
 </script>
 </body>
 </html>
-
