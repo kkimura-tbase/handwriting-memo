@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>手書きメモ（PDF注釈 & 自動保存 + 共有）</title>
+<title>手書きメモ（PDF注釈 & 自動保存 + 配布リンク一括作成）</title>
 <link rel="icon" href="data:,">
 <style>
   html,body{height:100%;margin:0;font-family:system-ui}
@@ -26,6 +26,16 @@
   .grabbing{cursor:grabbing;}
   .sep{width:1px;height:1.6rem;background:#ddd;margin:0 .25rem}
   .hint{font-size:.85rem;color:#666;border:none;background:transparent}
+
+  /* dialog（配布リンク一括作成） */
+  dialog{border:1px solid #ddd;border-radius:.75rem;padding:1rem;max-width:min(720px,calc(100vw - 2rem));}
+  dialog form{display:grid;gap:.6rem}
+  dialog .row{display:grid;grid-template-columns:1fr 1fr;gap:.5rem}
+  dialog label{display:flex;align-items:center;gap:.5rem}
+  dialog input[type="number"], dialog input[type="text"]{width:7.5rem}
+  dialog textarea{width:100%;height:220px}
+  .warn{color:#b00;font-size:.9rem}
+  menu{display:flex;gap:.5rem;justify-content:flex-end;margin:0;padding:0}
 </style>
 </head>
 <body>
@@ -59,12 +69,11 @@
     <button id="savePNGBtn">PNG保存</button>
 
     <div class="sep"></div>
-    <!-- ここから復活ボタン -->
     <button id="uploadPdfBtn">📤 PDFを公開（GitHub保存）</button>
     <input id="uploadPdfFile" type="file" accept="application/pdf" style="display:none">
     <button id="openPdfUrlBtn">🌐 PDF URLを読み込み</button>
     <button id="copyShareBtn">🔗 共有リンクをコピー</button>
-    <!-- ここまで復活ボタン -->
+    <button id="batchLinksBtn">🔢 生徒用リンク一括</button>
 
     <span class="hint">（手書きは自動保存／再読込で復元）</span>
   </div>
@@ -75,6 +84,35 @@
     <div id="textLayer"></div>
   </div>
 </div>
+
+<!-- 一括作成ダイアログ -->
+<dialog id="batchDlg">
+  <form method="dialog" id="batchForm">
+    <h3 style="margin:.25rem 0 .5rem">生徒用リンクを一括作成</h3>
+    <div class="row">
+      <label>人数 <input id="bCount" type="number" min="1" max="200" value="10"></label>
+      <label>開始番号 <input id="bStart" type="number" min="0" max="99999" value="1"></label>
+    </div>
+    <div class="row">
+      <label>生徒IDプレフィックス <input id="bPrefix" type="text" value="s"></label>
+      <label>桁数 <input id="bDigits" type="number" min="1" max="6" value="3"></label>
+    </div>
+    <div class="row">
+      <label>先生ID <input id="bTeacher" type="text"></label>
+      <label>課題ID <input id="bAid" type="text"></label>
+    </div>
+    <div id="bWarn" class="warn" style="display:none">※先に「PDFを公開」または「PDF URLを読み込み」でPDFをセットしてください。</div>
+    <menu>
+      <button value="cancel">キャンセル</button>
+      <button id="bGenerate" value="default">生成</button>
+    </menu>
+    <textarea id="bOutput" placeholder="ここにURL一覧が表示されます" style="display:none"></textarea>
+    <div id="bActions" style="display:none;display:flex;gap:.5rem;justify-content:flex-end">
+      <button id="bCopy" type="button">全コピー</button>
+      <button id="bDownload" type="button">CSVダウンロード</button>
+    </div>
+  </form>
+</dialog>
 
 <script type="module">
 /* ================== 設定 ================== */
@@ -114,11 +152,25 @@ const ui = {
   savePNGBtn:document.getElementById('savePNGBtn'),
   paletteWrap:document.getElementById('palette'),
   paletteBtns:document.querySelectorAll('#palette button'),
-  // 復活ボタン
   uploadPdfBtn:document.getElementById('uploadPdfBtn'),
   uploadPdfFile:document.getElementById('uploadPdfFile'),
   openPdfUrlBtn:document.getElementById('openPdfUrlBtn'),
   copyShareBtn:document.getElementById('copyShareBtn'),
+  batchLinksBtn:document.getElementById('batchLinksBtn'),
+  // dialog
+  batchDlg:document.getElementById('batchDlg'),
+  bCount:document.getElementById('bCount'),
+  bStart:document.getElementById('bStart'),
+  bPrefix:document.getElementById('bPrefix'),
+  bDigits:document.getElementById('bDigits'),
+  bTeacher:document.getElementById('bTeacher'),
+  bAid:document.getElementById('bAid'),
+  bGenerate:document.getElementById('bGenerate'),
+  bWarn:document.getElementById('bWarn'),
+  bOutput:document.getElementById('bOutput'),
+  bCopy:document.getElementById('bCopy'),
+  bDownload:document.getElementById('bDownload'),
+  bActions:document.getElementById('bActions'),
 };
 
 /* ============= 色ヘルパ ============= */
@@ -145,7 +197,7 @@ const state = {
   renderTask:null, renderSeq:0,
   activePointerId:null, activePointerType:null,
   penOnly:false,
-  currentPdfUrl:null // 共有リンク作成に使う
+  currentPdfUrl:null
 };
 
 /* ============= 先生/課題/生徒 ID ============= */
@@ -172,6 +224,7 @@ function setActiveTool(tool){
   stageWrap.classList.toggle('grabbing', tool==='hand' && state.isHandPanning);
 }
 setActiveTool('pen');
+
 function setSelectedPalette(color){
   const hex=toHexColor(color);
   state.color=hex; ui.color.value=hex;
@@ -310,7 +363,7 @@ ui.pdfInput.onchange=async e=>{
     const buf=await f.arrayBuffer();
     state.pdf=await pdfjsLib.getDocument({data:buf}).promise;
     state.totalPages=state.pdf.numPages; state.page=1;
-    state.currentPdfUrl=null; // ローカル読み込みなので共有URLは未設定
+    state.currentPdfUrl=null;
     await drawPage();
   }catch(err){ console.error(err); alert('PDF読み込み失敗: '+(err.message||err)); }
 };
@@ -437,11 +490,11 @@ async function loadNoteIfAny(){
 }
 
 /* ============= PDFのURL読み込み・共有 ============= */
-function buildShareUrl(pdfUrl){
+function buildShareUrl(pdfUrl, overrideStudentId){
   const base = location.origin + location.pathname;
   const q = new URLSearchParams();
   q.set('pdf', pdfUrl);
-  q.set('t', teacherId); q.set('a', assignmentId); q.set('s', studentId);
+  q.set('t', teacherId); q.set('a', assignmentId); q.set('s', overrideStudentId ?? studentId);
   return `${base}?${q.toString()}`;
 }
 async function copyText(t){ try{ await navigator.clipboard.writeText(t); alert('コピーしました！'); }catch{ prompt('この文字列をコピーしてください', t); } }
@@ -454,7 +507,6 @@ async function loadPdfFromUrl(url){
     state.pdf = await pdfjsLib.getDocument({data:buf}).promise;
     state.totalPages = state.pdf.numPages; state.page = 1;
     state.currentPdfUrl = url;
-    // アドレスバーも更新（履歴は汚さない）
     const qs = new URLSearchParams(location.search);
     qs.set('pdf', url); qs.set('t', teacherId); qs.set('a', assignmentId); qs.set('s', studentId);
     history.replaceState(null,'', location.pathname + '?' + qs.toString());
@@ -515,6 +567,57 @@ ui.uploadPdfFile.onchange = async e=>{
   if(!f) return;
   await uploadPdfToGithub(f);
   e.target.value='';
+};
+
+/* ============= 配布リンク一括作成 ============= */
+function pad(n, digits){ n=Number(n)||0; return String(n).padStart(digits,'0'); }
+ui.batchLinksBtn.onclick = ()=>{
+  // 初期値セット
+  ui.bTeacher.value = teacherId;
+  ui.bAid.value = assignmentId;
+  ui.bWarn.style.display = state.currentPdfUrl ? 'none' : 'block';
+  ui.bOutput.style.display = 'none';
+  ui.bActions.style.display = 'none';
+  ui.batchDlg.showModal();
+};
+ui.bGenerate.addEventListener('click', (ev)=>{
+  ev.preventDefault(); // dialog の自動closeを止める
+  if(!state.currentPdfUrl){
+    ui.bWarn.style.display='block';
+    return;
+  }
+  // 入力値
+  const count  = Math.max(1, Math.min(200, Number(ui.bCount.value)||10));
+  const start  = Math.max(0, Math.min(99999, Number(ui.bStart.value)||1));
+  const prefix = (ui.bPrefix.value||'s').trim();
+  const digits = Math.max(1, Math.min(6, Number(ui.bDigits.value)||3));
+  teacherId    = (ui.bTeacher.value||teacherId).trim(); localStorage.setItem('teacherId', teacherId);
+  assignmentId = (ui.bAid.value||assignmentId).trim();  localStorage.setItem('aid', assignmentId);
+
+  const lines=[];
+  for(let i=0;i<count;i++){
+    const sid = `${prefix}${pad(start+i, digits)}`;
+    const link = buildShareUrl(state.currentPdfUrl, sid);
+    lines.push(link);
+  }
+  ui.bOutput.value = lines.join('\n');
+  ui.bOutput.style.display = 'block';
+  ui.bActions.style.display = 'flex';
+});
+ui.bCopy.onclick = async ()=>{
+  try{ await navigator.clipboard.writeText(ui.bOutput.value); alert('一覧をコピーしました'); }catch{ prompt('この文字列をコピーしてください', ui.bOutput.value); }
+};
+ui.bDownload.onclick = ()=>{
+  const rows = ui.bOutput.value.split('\n').filter(Boolean).map(l=>{
+    const u = new URL(l);
+    return `${u.searchParams.get('s')},${l}`;
+  });
+  const csv = 'student_id,link\n' + rows.join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${assignmentId}_${teacherId}_links.csv`;
+  a.click();
 };
 
 /* ============= 起動時：?pdf= があれば自動読込 ============= */
