@@ -49,6 +49,7 @@
 </head>
 <body>
 <div class="app">
+  <!-- 上段 -->
   <div class="bar" id="barTop">
     <div class="group">
       <button id="uploadPdfBtn" class="btn">📤 公開（GitHub）</button>
@@ -71,6 +72,7 @@
     </div>
   </div>
 
+  <!-- 下段：ツール -->
   <div class="bar" id="barTools">
     <div class="group">
       <button id="penBtn" class="btn active">✒️ ペン</button>
@@ -92,6 +94,9 @@
     </div>
     <div class="group">
       <button id="handBtn" class="btn">✋ 移動</button>
+      <!-- ★ 追加：上下スクロール -->
+      <button id="scrollUpBtn" class="btn" title="上へスクロール">▲</button>
+      <button id="scrollDownBtn" class="btn" title="下へスクロール">▼</button>
       <div class="sep"></div>
       <div class="zoom">
         <button id="zoomOut" class="btn">−</button>
@@ -120,7 +125,7 @@
   </div>
 </div>
 
-<!-- IDs編集ダイアログ -->
+<!-- IDs編集 -->
 <dialog id="idsDlg">
   <form method="dialog" id="idsForm">
     <h3>IDの編集</h3>
@@ -139,7 +144,7 @@
   </form>
 </dialog>
 
-<!-- 一括作成ダイアログ -->
+<!-- 一括作成 -->
 <dialog id="batchDlg">
   <form method="dialog" id="batchForm">
     <h3>生徒用リンクを一括作成</h3>
@@ -177,8 +182,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = './build/pdf.worker.mjs';
 const UPLOAD_ENDPOINT = 'https://pdf-uploader-plain-union-c1fe.kkimura.workers.dev';
 const SAVE_ENDPOINT   = UPLOAD_ENDPOINT;
 const APP_KEY_PROMPT  = '先生用キー（APP_KEY）を入力してください';
-const AUTO_OPEN_AFTER_UPLOAD = true;   // ← 公開後に共有URLへ実遷移
-const COPY_LINK_AFTER_UPLOAD = true;   // ← 同時にクリップボードへも保存
+const AUTO_OPEN_AFTER_UPLOAD = true;
+const COPY_LINK_AFTER_UPLOAD = true;
 
 /* ====== 参照 ====== */
 const dpr = window.devicePixelRatio||1;
@@ -189,9 +194,11 @@ const pdfCtx = pdfCanvas.getContext('2d');
 const inkCtx = inkCanvas.getContext('2d');
 const stageWrap = document.getElementById('stageWrap');
 const $ = id=>document.getElementById(id);
+const SCROLL_STEP = 300;
 
 const ui = {
   penBtn:$('penBtn'), eraserBtn:$('eraserBtn'), textBtn:$('textBtn'), handBtn:$('handBtn'),
+  scrollUpBtn:$('scrollUpBtn'), scrollDownBtn:$('scrollDownBtn'),
   size:$('size'), color:$('color'), fontSize:$('fontSize'),
   paletteWrap:$('palette'), paletteBtns:document.querySelectorAll('#palette button'),
   undoBtn:$('undoBtn'), redoBtn:$('redoBtn'), clearBtn:$('clearBtn'), penOnly:$('penOnly'),
@@ -244,7 +251,7 @@ const state = {
   drawing:false, last:null, stroke:[], history:[], redoStack:[],
   pdf:null, page:1, totalPages:0,
   scale:1, baseWidth:0, baseHeight:0,
-  margin:0,  // 余白ゼロ
+  margin:0,
   pdfOffsetX:0, pdfOffsetY:0,
   texts:[],
   isPinching:false, touches:new Map(), lastCenter:null, lastDist:0, rafScheduled:false,
@@ -312,7 +319,7 @@ function setActiveTool(tool){
   textLayer.style.pointerEvents = (tool==='text')?'auto':'none';
   stageWrap.classList.toggle('grabbing', tool==='hand' && state.isHandPanning);
 
-  // ★ 移動ツール時は指1本の「ネイティブスクロール」を許可
+  // 移動ツール時：指はネイティブスクロール可
   if(tool==='hand'){
     pdfCanvas.style.touchAction = 'pan-x pan-y';
     inkCanvas.style.touchAction = 'pan-x pan-y';
@@ -444,6 +451,9 @@ ui.eraserBtn.onclick=()=>setActiveTool('eraser');
 ui.textBtn.onclick=()=>setActiveTool('text');
 ui.handBtn.onclick=()=>setActiveTool('hand');
 
+ui.scrollUpBtn.onclick   = ()=> stageWrap.scrollBy({top:-SCROLL_STEP, behavior:'smooth'});
+ui.scrollDownBtn.onclick = ()=> stageWrap.scrollBy({top: SCROLL_STEP, behavior:'smooth'});
+
 ui.color.addEventListener('input', ()=> setSelectedPalette(ui.color.value));
 ui.paletteWrap.addEventListener('click',(e)=>{ const b=e.target.closest('button[data-color]'); if(!b) return; setSelectedPalette(b.dataset.color); });
 ui.size.addEventListener('input', ()=> state.size=+ui.size.value);
@@ -460,13 +470,12 @@ $('zoomIn').onclick = ()=>{ state.scale=Math.min(3, state.scale*1.2); drawPage()
 $('zoomOut').onclick= ()=>{ state.scale=Math.max(0.5, state.scale/1.2); drawPage(); };
 $('zoomReset').onclick= ()=>{ state.scale=1; drawPage(); };
 
-/* ====== 手ツール：スクロール ====== */
-// タッチは「ネイティブスクロール」に任せ、マウスだけ自前でドラッグスクロール
+/* ====== 手ツール：スクロール（マウスは自前、指はネイティブ） ====== */
 function canHandPanPointer(e){
   if(state.isPinching) return false;
   if(state.tool!=='hand') return false;
-  if(e && e.pointerType==='touch') return false; // ← 指はネイティブ
-  return true; // マウス等のみ自前
+  if(e && e.pointerType==='touch') return false; // 指はネイティブ
+  return true;
 }
 stageWrap.addEventListener('pointerdown', e=>{
   if(!canHandPanPointer(e)) return;
@@ -491,7 +500,7 @@ stageWrap.addEventListener('pointermove', e=>{
   });
 });
 
-/* ====== Ink 入力（ペンのみ強化） ====== */
+/* ====== Ink 入力 ====== */
 function isPenLike(e){ const isPen = e.pointerType === 'pen'; const isMouseOnNonTouchPC = (e.pointerType === 'mouse' && (navigator.maxTouchPoints||0) === 0); return isPen || isMouseOnNonTouchPC; }
 inkCanvas.addEventListener('pointerdown', e => { if (state.isPinching) return; if (state.tool !== 'pen' && state.tool !== 'eraser') return; if (state.penOnly && !isPenLike(e)) return; if (state.activePointerId !== null && state.activePointerId !== e.pointerId) return; state.activePointerId = e.pointerId; state.activePointerType = e.pointerType; try { inkCanvas.setPointerCapture(e.pointerId); } catch {} begin(getLogicalPos(e)); });
 inkCanvas.addEventListener('pointermove', e => { if (state.isPinching) return; if (state.activePointerId === null || e.pointerId !== state.activePointerId) return; if (state.tool !== 'pen' && state.tool !== 'eraser') return; if (state.penOnly && !isPenLike(e)) return; if (state.drawing) move(getLogicalPos(e)); });
@@ -631,7 +640,7 @@ async function loadNoteIfAny(){
   }catch(e){ console.warn('load note err', e); }
 }
 
-/* ====== PDFのURL読み込み・共有 ====== */
+/* ====== PDF URL読込・共有 ====== */
 function buildShareUrl(pdfUrl, overrideStudentId){
   const base = location.origin + location.pathname;
   const q = new URLSearchParams();
@@ -699,23 +708,12 @@ async function uploadPdfToGithub(file){
     return null;
   }
 
-  // 状態反映
   state.currentPdfUrl = rawUrl;
-
-  // 共有URL（?pdf=...&t=...&a=...&s=...）
   const share = buildShareUrl(state.currentPdfUrl);
 
-  // まずは同タブで即時表示（失敗しても遷移でカバー）
   try{ await loadPdfFromUrl(state.currentPdfUrl); }catch(e){ console.warn('inline load failed', e); }
-
-  // クリップボード保存（任意）
   if (COPY_LINK_AFTER_UPLOAD) { try { await navigator.clipboard.writeText(share); } catch {} }
-
-  // ★ 共有URLへ実遷移（履歴置換）
-  if (AUTO_OPEN_AFTER_UPLOAD) {
-    location.replace(share);
-    return share;
-  }
+  if (AUTO_OPEN_AFTER_UPLOAD) { location.replace(share); return share; }
 
   alert('PDFを公開して読み込みました！');
   return state.currentPdfUrl;
@@ -728,7 +726,7 @@ ui.uploadPdfFile.onchange = async e=>{
   e.target.value='';
 };
 
-/* ====== 配布リンク一括作成 ====== */
+/* ====== 一括リンク作成 ====== */
 ui.batchLinksBtn.onclick = ()=>{
   ui.bTeacher.value = teacherId; ui.bAid.value = assignmentId;
   ui.bPdf.value = state.currentPdfUrl || '';
