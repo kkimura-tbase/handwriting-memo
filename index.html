@@ -6,10 +6,8 @@
 <title>手書きメモ（PDF注釈・配布・自動保存）</title>
 <link rel="icon" href="data:,">
 <style>
-  :root{
-    --bg:#f7f7f9; --bd:#dcdfe3; --chip:#eef3ff; --accent:#4c7dff; --text:#1a1a1a;
-  }
-  html,body{height:100%;margin:0;color:var(--text);font-family:system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", Helvetica, Arial, sans-serif}
+  :root{ --bg:#f7f7f9; --bd:#dcdfe3; --chip:#eef3ff; --accent:#4c7dff; --text:#1a1a1a; }
+  html,body{height:100%;margin:0;color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans JP",Helvetica,Arial,sans-serif}
   .app{display:grid;grid-template-rows:auto auto 1fr;height:100%;background:#fff}
   .bar{display:flex;align-items:center;gap:.5rem;padding:.55rem .7rem;border-bottom:1px solid var(--bd);background:var(--bg);flex-wrap:wrap}
   .bar .group{display:flex;align-items:center;gap:.4rem;padding:.25rem .35rem;background:#fff;border:1px solid var(--bd);border-radius:.6rem}
@@ -37,7 +35,7 @@
   .dot.error{background:#ef4444}
   .zoom{display:flex;gap:.25rem}
   dialog{border:1px solid var(--bd);border-radius:.8rem;padding:1rem;max-width:min(720px,calc(100vw - 2rem))}
-  dialog::backdrop{ background:rgba(0,0,0,.15); } /* 固まり対策で見える化 */
+  dialog::backdrop{ background:rgba(0,0,0,.15); }
   dialog form{display:grid;gap:.7rem}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
   .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.6rem}
@@ -51,7 +49,6 @@
 </head>
 <body>
 <div class="app">
-  <!-- 上段：ファイル/配布／ID／ステータス -->
   <div class="bar" id="barTop">
     <div class="group">
       <button id="uploadPdfBtn" class="btn">📤 公開（GitHub）</button>
@@ -74,7 +71,6 @@
     </div>
   </div>
 
-  <!-- 下段：描画ツール -->
   <div class="bar" id="barTools">
     <div class="group">
       <button id="penBtn" class="btn active">✒️ ペン</button>
@@ -181,6 +177,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = './build/pdf.worker.mjs';
 const UPLOAD_ENDPOINT = 'https://pdf-uploader-plain-union-c1fe.kkimura.workers.dev';
 const SAVE_ENDPOINT   = UPLOAD_ENDPOINT;
 const APP_KEY_PROMPT  = '先生用キー（APP_KEY）を入力してください';
+const AUTO_OPEN_AFTER_UPLOAD = true;   // ← 公開後に共有URLへ実遷移
+const COPY_LINK_AFTER_UPLOAD = true;   // ← 同時にクリップボードへも保存
 
 /* ====== 参照 ====== */
 const dpr = window.devicePixelRatio||1;
@@ -211,7 +209,7 @@ const ui = {
   bGenerate:$('bGenerate'), bWarn:$('bWarn'), bOutput:$('bOutput'), bCopy:$('bCopy'), bDownload:$('bDownload'), bActions:$('bActions'),
 };
 
-/* ====== ダイアログ安全オープン／閉じる対策 ====== */
+/* ====== ダイアログ安全オープン ====== */
 function openModalSafe(dlg){
   try{ if(typeof dlg.showModal==='function') dlg.showModal(); else dlg.show(); }
   catch{ dlg.show(); }
@@ -246,7 +244,7 @@ const state = {
   drawing:false, last:null, stroke:[], history:[], redoStack:[],
   pdf:null, page:1, totalPages:0,
   scale:1, baseWidth:0, baseHeight:0,
-  margin:0, /* ← 余白ゼロ */
+  margin:0,  // 余白ゼロ
   pdfOffsetX:0, pdfOffsetY:0,
   texts:[],
   isPinching:false, touches:new Map(), lastCenter:null, lastDist:0, rafScheduled:false,
@@ -313,6 +311,15 @@ function setActiveTool(tool){
   });
   textLayer.style.pointerEvents = (tool==='text')?'auto':'none';
   stageWrap.classList.toggle('grabbing', tool==='hand' && state.isHandPanning);
+
+  // ★ 移動ツール時は指1本の「ネイティブスクロール」を許可
+  if(tool==='hand'){
+    pdfCanvas.style.touchAction = 'pan-x pan-y';
+    inkCanvas.style.touchAction = 'pan-x pan-y';
+  }else{
+    pdfCanvas.style.touchAction = 'none';
+    inkCanvas.style.touchAction = 'none';
+  }
 }
 setActiveTool('pen');
 
@@ -348,12 +355,11 @@ async function drawPage(){
   pdfCtx.setTransform(dpr,0,0,dpr,0,0);
   pdfCtx.fillStyle='#ffffff';
   pdfCtx.fillRect(0,0,pdfCanvas.width/dpr,pdfCanvas.height/dpr);
-  /* 外枠線は不要のため削除（余白ゼロに最適化） */
 
   if(state.pdf){
     const page = await state.pdf.getPage(state.page);
     const v = page.getViewport({scale:state.scale});
-    const offsetX = state.margin*state.scale; // margin=0 なので 0
+    const offsetX = state.margin*state.scale;
     const offsetY = state.margin*state.scale;
     state.pdfOffsetX = state.margin; state.pdfOffsetY = state.margin;
 
@@ -455,10 +461,35 @@ $('zoomOut').onclick= ()=>{ state.scale=Math.max(0.5, state.scale/1.2); drawPage
 $('zoomReset').onclick= ()=>{ state.scale=1; drawPage(); };
 
 /* ====== 手ツール：スクロール ====== */
-function canHandPanPointer(e){ if(state.isPinching) return false; return state.tool==='hand'; }
-stageWrap.addEventListener('pointerdown', e=>{ if(!canHandPanPointer(e)) return; state.isHandPanning = true; stageWrap.classList.add('grabbing'); state.handStart = { x:e.clientX, y:e.clientY, sl:stageWrap.scrollLeft, st:stageWrap.scrollTop }; try{ stageWrap.setPointerCapture(e.pointerId); }catch{} });
-stageWrap.addEventListener('pointermove', e=>{ if(!state.isHandPanning) return; const dx = e.clientX - state.handStart.x; const dy = e.clientY - state.handStart.y; stageWrap.scrollLeft = state.handStart.sl - dx; stageWrap.scrollTop  = state.handStart.st - dy; });
-['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=> stageWrap.addEventListener(t, ()=>{ if(state.isHandPanning){ state.isHandPanning=false; stageWrap.classList.remove('grabbing'); } }));
+// タッチは「ネイティブスクロール」に任せ、マウスだけ自前でドラッグスクロール
+function canHandPanPointer(e){
+  if(state.isPinching) return false;
+  if(state.tool!=='hand') return false;
+  if(e && e.pointerType==='touch') return false; // ← 指はネイティブ
+  return true; // マウス等のみ自前
+}
+stageWrap.addEventListener('pointerdown', e=>{
+  if(!canHandPanPointer(e)) return;
+  state.isHandPanning = true;
+  stageWrap.classList.add('grabbing');
+  state.handStart = { x:e.clientX, y:e.clientY, sl:stageWrap.scrollLeft, st:stageWrap.scrollTop };
+  try{ stageWrap.setPointerCapture(e.pointerId); }catch{}
+});
+stageWrap.addEventListener('pointermove', e=>{
+  if(!state.isHandPanning) return;
+  const dx = e.clientX - state.handStart.x;
+  const dy = e.clientY - state.handStart.y;
+  stageWrap.scrollLeft = state.handStart.sl - dx;
+  stageWrap.scrollTop  = state.handStart.st - dy;
+});
+['pointerup','pointercancel','pointerleave','pointerout'].forEach(t=>{
+  stageWrap.addEventListener(t, ()=>{
+    if(state.isHandPanning){
+      state.isHandPanning=false;
+      stageWrap.classList.remove('grabbing');
+    }
+  });
+});
 
 /* ====== Ink 入力（ペンのみ強化） ====== */
 function isPenLike(e){ const isPen = e.pointerType === 'pen'; const isMouseOnNonTouchPC = (e.pointerType === 'mouse' && (navigator.maxTouchPoints||0) === 0); return isPen || isMouseOnNonTouchPC; }
@@ -639,6 +670,8 @@ async function uploadPdfToGithub(file){
   const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
   if (!key) return null;
   localStorage.setItem('APP_KEY', key);
+
+  let data;
   try{
     const res = await fetch(UPLOAD_ENDPOINT, {
       method:'POST',
@@ -652,32 +685,40 @@ async function uploadPdfToGithub(file){
       body:file
     });
     const txt = await res.text();
-    const data = JSON.parse(txt);
+    try{ data = JSON.parse(txt); }catch{ throw new Error('Invalid JSON: '+txt); }
     if(!res.ok || !data.ok){ throw new Error(txt); }
-
-    // 公開URLを保持
-    state.currentPdfUrl = data.raw_url || null;
-
-    // 共有リンクを生成（今のID付き）
-    const share = state.currentPdfUrl ? buildShareUrl(state.currentPdfUrl) : '';
-
-    // そのまま自動で読み込み（URLも history.replaceState で反映される）
-    if (state.currentPdfUrl) {
-      await loadPdfFromUrl(state.currentPdfUrl);
-    }
-
-    // 共有リンクはコピーしておく（配布が楽）
-    if (share) {
-      try { await copyText(share); } catch {}
-    }
-
-    alert('PDFを公開して読み込みました！');
-    return state.currentPdfUrl;
   }catch(e){
     console.error('UPLOAD_ERROR', e);
     alert('アップロードに失敗: ' + String(e));
     return null;
   }
+
+  const rawUrl = data.raw_url || data.rawUrl || data.download_url || data.downloadUrl || data.url || data.raw;
+  if(!rawUrl){
+    alert('アップロード成功。ただしURLが返りませんでした（Workerのレスポンスを確認）。');
+    return null;
+  }
+
+  // 状態反映
+  state.currentPdfUrl = rawUrl;
+
+  // 共有URL（?pdf=...&t=...&a=...&s=...）
+  const share = buildShareUrl(state.currentPdfUrl);
+
+  // まずは同タブで即時表示（失敗しても遷移でカバー）
+  try{ await loadPdfFromUrl(state.currentPdfUrl); }catch(e){ console.warn('inline load failed', e); }
+
+  // クリップボード保存（任意）
+  if (COPY_LINK_AFTER_UPLOAD) { try { await navigator.clipboard.writeText(share); } catch {} }
+
+  // ★ 共有URLへ実遷移（履歴置換）
+  if (AUTO_OPEN_AFTER_UPLOAD) {
+    location.replace(share);
+    return share;
+  }
+
+  alert('PDFを公開して読み込みました！');
+  return state.currentPdfUrl;
 }
 ui.uploadPdfBtn.onclick = ()=> ui.uploadPdfFile.click();
 ui.uploadPdfFile.onchange = async e=>{
