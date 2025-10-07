@@ -37,7 +37,7 @@
   .dot.error{background:#ef4444}
   .zoom{display:flex;gap:.25rem}
   dialog{border:1px solid var(--bd);border-radius:.8rem;padding:1rem;max-width:min(720px,calc(100vw - 2rem))}
-  dialog::backdrop{ background:rgba(0,0,0,.15); } /* ← 固まり対策で見える化 */
+  dialog::backdrop{ background:rgba(0,0,0,.15); } /* 固まり対策で見える化 */
   dialog form{display:grid;gap:.7rem}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
   .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.6rem}
@@ -246,7 +246,8 @@ const state = {
   drawing:false, last:null, stroke:[], history:[], redoStack:[],
   pdf:null, page:1, totalPages:0,
   scale:1, baseWidth:0, baseHeight:0,
-  margin:200, pdfOffsetX:0, pdfOffsetY:0,
+  margin:0, /* ← 余白ゼロ */
+  pdfOffsetX:0, pdfOffsetY:0,
   texts:[],
   isPinching:false, touches:new Map(), lastCenter:null, lastDist:0, rafScheduled:false,
   isHandPanning:false, handStart:{x:0,y:0,sl:0,st:0},
@@ -314,6 +315,7 @@ function setActiveTool(tool){
   stageWrap.classList.toggle('grabbing', tool==='hand' && state.isHandPanning);
 }
 setActiveTool('pen');
+
 function setSelectedPalette(color){
   const hex=toHexColor(color);
   state.color=hex; ui.color.value=hex;
@@ -346,13 +348,12 @@ async function drawPage(){
   pdfCtx.setTransform(dpr,0,0,dpr,0,0);
   pdfCtx.fillStyle='#ffffff';
   pdfCtx.fillRect(0,0,pdfCanvas.width/dpr,pdfCanvas.height/dpr);
-  pdfCtx.strokeStyle='#e0e0e0'; pdfCtx.lineWidth=1;
-  pdfCtx.strokeRect(0.5,0.5,(pdfCanvas.width/dpr)-1,(pdfCanvas.height/dpr)-1);
+  /* 外枠線は不要のため削除（余白ゼロに最適化） */
 
   if(state.pdf){
     const page = await state.pdf.getPage(state.page);
     const v = page.getViewport({scale:state.scale});
-    const offsetX = state.margin*state.scale;
+    const offsetX = state.margin*state.scale; // margin=0 なので 0
     const offsetY = state.margin*state.scale;
     state.pdfOffsetX = state.margin; state.pdfOffsetY = state.margin;
 
@@ -508,7 +509,7 @@ stageWrap.addEventListener('pointermove', e=>{
 ['pointerup','pointercancel','pointerleave','pointerout'].forEach(type=> stageWrap.addEventListener(type, e=>{ if(e.pointerType==='touch'){ state.touches.delete(e.pointerId); onTouchPointersChanged(); } }));
 
 /* ====== PNG（見た目合成） ====== */
-function savePNG(){
+function exportPNG(){
   const out=document.createElement('canvas'); out.width=pdfCanvas.width; out.height=pdfCanvas.height;
   const o=out.getContext('2d'); o.drawImage(pdfCanvas,0,0); o.drawImage(inkCanvas,0,0);
   const curr=String(state.pdf?state.page:1); o.textBaseline='top';
@@ -523,7 +524,7 @@ function savePNG(){
   }
   const a=document.createElement('a'); a.href=out.toDataURL('image/png'); a.download=`note_page${state.pdf?state.page:1}.png`; a.click();
 }
-ui.savePNGBtn.onclick=savePNG; /* ← クリック登録はここ1か所だけ */
+ui.savePNGBtn.onclick = exportPNG;
 
 /* ====== ノート保存/復元 ====== */
 let saveTimer=null;
@@ -653,11 +654,25 @@ async function uploadPdfToGithub(file){
     const txt = await res.text();
     const data = JSON.parse(txt);
     if(!res.ok || !data.ok){ throw new Error(txt); }
+
+    // 公開URLを保持
     state.currentPdfUrl = data.raw_url || null;
+
+    // 共有リンクを生成（今のID付き）
     const share = state.currentPdfUrl ? buildShareUrl(state.currentPdfUrl) : '';
-    alert('PDFを公開しました！\n' + (share ? '共有リンクをコピーします。' : ''));
-    if(share) await copyText(share);
-    return data.raw_url || null;
+
+    // そのまま自動で読み込み（URLも history.replaceState で反映される）
+    if (state.currentPdfUrl) {
+      await loadPdfFromUrl(state.currentPdfUrl);
+    }
+
+    // 共有リンクはコピーしておく（配布が楽）
+    if (share) {
+      try { await copyText(share); } catch {}
+    }
+
+    alert('PDFを公開して読み込みました！');
+    return state.currentPdfUrl;
   }catch(e){
     console.error('UPLOAD_ERROR', e);
     alert('アップロードに失敗: ' + String(e));
