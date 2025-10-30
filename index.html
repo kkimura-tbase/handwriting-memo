@@ -56,8 +56,8 @@
       <input id="uploadPdfFile" type="file" accept="application/pdf" style="display:none">
       <div class="sep"></div>
       <button id="openPdfUrlBtn" class="btn">🌐 URL読込</button>
-      <button id="copyShareBtn" class="btn">🔗 共同編集リンク</button>
-      <button id="batchLinksBtn" class="btn">🔢 コピーを配布</button>
+      <button id="copyShareBtn" class="btn">🔗 共有リンク</button>
+      <button id="batchLinksBtn" class="btn">🔢 一括</button>
     </div>
     <div class="group">
       <span class="chip">👩‍🏫 <span id="chipTeacher">-</span></span>
@@ -94,7 +94,6 @@
     </div>
     <div class="group">
       <button id="handBtn" class="btn">✋ 移動</button>
-      <!-- ★ 追加：上下スクロール -->
       <button id="scrollUpBtn" class="btn" title="上へスクロール">▲</button>
       <button id="scrollDownBtn" class="btn" title="下へスクロール">▼</button>
       <div class="sep"></div>
@@ -185,6 +184,10 @@ const APP_KEY_PROMPT  = '先生用キー（APP_KEY）を入力してください
 const AUTO_OPEN_AFTER_UPLOAD = true;
 const COPY_LINK_AFTER_UPLOAD = true;
 
+/* 初期表示（中央寄せ＆ちょい拡大）のパラメータ */
+const INITIAL_FIT = 'fit-width';   // 'fit-width' | 'fit-height' | 'fit-page'
+const INITIAL_SCALE_BONUS = 1.15;  // 1.0より大きいと「少し大きめ」
+
 /* ====== 参照 ====== */
 const dpr = window.devicePixelRatio||1;
 const pdfCanvas = document.getElementById('pdfLayer');
@@ -226,7 +229,7 @@ function openModalSafe(dlg){
   dlg.addEventListener('cancel', (e)=>{ e.preventDefault(); dlg.close(); });
   dlg.addEventListener('click', (e)=>{
     const r = dlg.getBoundingClientRect();
-    const inside = e.clientX>=r.left && e.clientX<=r.right && e.clientY>=r.top && e.clientY<=r.bottom;
+    const inside = e.clientX>=r.left && e.clientX<=r.right && e.clientY<=r.bottom && e.clientY>=r.top;
     if(!inside) dlg.close();
   });
 });
@@ -245,13 +248,41 @@ function toHexColor(c){
 function copyText(t){ return navigator.clipboard.writeText(t).catch(()=>{ prompt('この文字列をコピーしてください', t); }); }
 function pad(n,d){return String(Number(n)||0).padStart(d,'0');}
 
+/* 初期スケールの計算 */
+function fitScaleForPage(mode){
+  const sw = stageWrap.clientWidth || 1;
+  const sh = stageWrap.clientHeight || 1;
+  const pw = state.baseWidth  || 1;
+  const ph = state.baseHeight || 1;
+
+  const sW = sw / pw;
+  const sH = sh / ph;
+
+  let s;
+  if(mode === 'fit-height') s = sH;
+  else if(mode === 'fit-page') s = Math.min(sW, sH);
+  else s = sW; // 幅基準
+
+  s = s * (INITIAL_SCALE_BONUS || 1);
+  return Math.max(0.1, Math.min(3, s));
+}
+/* 中央へスクロール */
+function centerView(){
+  const contentW = contentWidth()  * state.scale;
+  const contentH = contentHeight() * state.scale;
+  const targetLeft = Math.max(0, (contentW - stageWrap.clientWidth ) / 2);
+  const targetTop  = Math.max(0, (contentH - stageWrap.clientHeight) / 2);
+  stageWrap.scrollLeft = targetLeft;
+  stageWrap.scrollTop  = targetTop;
+}
+
 /* ====== 状態 ====== */
 const state = {
   tool:'pen', color:toHexColor(ui.color.value), size:+ui.size.value,
   drawing:false, last:null, stroke:[], history:[], redoStack:[],
   pdf:null, page:1, totalPages:0,
   scale:1, baseWidth:0, baseHeight:0,
-  margin:0,
+  margin:0,              /* 余白ゼロ */
   pdfOffsetX:0, pdfOffsetY:0,
   texts:[],
   isPinching:false, touches:new Map(), lastCenter:null, lastDist:0, rafScheduled:false,
@@ -466,9 +497,9 @@ ui.clearBtn.onclick=()=>{ if(confirm('全消去しますか？')){ state.history
 ui.prev.onclick=()=>{ if(state.pdf && state.page>1){ state.page--; drawPage(); } };
 ui.next.onclick=()=>{ if(state.pdf && state.page<state.totalPages){ state.page++; drawPage(); } };
 
-$('zoomIn').onclick = ()=>{ state.scale=Math.min(3, state.scale*1.2); drawPage(); };
-$('zoomOut').onclick= ()=>{ state.scale=Math.max(0.5, state.scale/1.2); drawPage(); };
-$('zoomReset').onclick= ()=>{ state.scale=1; drawPage(); };
+$('zoomIn').onclick = ()=>{ state.scale=Math.min(3, state.scale*1.2); drawPage(); centerView(); };
+$('zoomOut').onclick= ()=>{ state.scale=Math.max(0.5, state.scale/1.2); drawPage(); centerView(); };
+$('zoomReset').onclick= ()=>{ state.scale=fitScaleForPage(INITIAL_FIT); drawPage(); centerView(); };
 
 /* ====== 手ツール：スクロール（マウスは自前、指はネイティブ） ====== */
 function canHandPanPointer(e){
@@ -648,20 +679,45 @@ function buildShareUrl(pdfUrl, overrideStudentId){
   q.set('t', teacherId); q.set('a', assignmentId); q.set('s', overrideStudentId ?? studentId);
   return `${base}?${q.toString()}`;
 }
+/* ★ 読み込み：初期スケール＆中央寄せを適用 */
 async function loadPdfFromUrl(url){
   try{
     const res = await fetch(url, {mode:'cors'});
     if(!res.ok) throw new Error('fetch fail');
     const buf = await res.arrayBuffer();
+
+    // PDFを準備
     state.pdf = await pdfjsLib.getDocument({data:buf}).promise;
-    state.totalPages = state.pdf.numPages; state.page = 1;
+    state.totalPages = state.pdf.numPages;
+    state.page = 1;
     state.currentPdfUrl = url;
+
+    // 初期スケールのための素サイズを取得
+    try{
+      const page1 = await state.pdf.getPage(1);
+      const v1    = page1.getViewport({scale:1});
+      state.baseWidth  = v1.width;
+      state.baseHeight = v1.height;
+    }catch{}
+
+    // 初期スケール（幅基準＋少し大きめが既定）
+    state.scale = fitScaleForPage(INITIAL_FIT);
+
+    // URLクエリを置換（共有URLの土台維持）
     const qs = new URLSearchParams(location.search);
     qs.set('pdf', url); qs.set('t', teacherId); qs.set('a', assignmentId); qs.set('s', studentId);
     history.replaceState(null,'', location.pathname + '?' + qs.toString());
+
+    // 描画→中央寄せ
     await drawPage();
-  }catch(e){ alert('PDFの読み込みに失敗しました'); console.warn(e); }
+    centerView();
+
+  }catch(e){
+    alert('PDFの読み込みに失敗しました');
+    console.warn(e);
+  }
 }
+
 ui.openPdfUrlBtn.onclick = async ()=>{
   const u = prompt('読み込むPDFのURL（raw.githubusercontent.com など）を入力');
   if(!u) return;
@@ -711,8 +767,13 @@ async function uploadPdfToGithub(file){
   state.currentPdfUrl = rawUrl;
   const share = buildShareUrl(state.currentPdfUrl);
 
+  // まず同タブ表示（失敗しても遷移でカバー）
   try{ await loadPdfFromUrl(state.currentPdfUrl); }catch(e){ console.warn('inline load failed', e); }
+
+  // クリップボード保存（任意）
   if (COPY_LINK_AFTER_UPLOAD) { try { await navigator.clipboard.writeText(share); } catch {} }
+
+  // 共有URLへ実遷移（履歴置換）
   if (AUTO_OPEN_AFTER_UPLOAD) { location.replace(share); return share; }
 
   alert('PDFを公開して読み込みました！');
@@ -783,8 +844,7 @@ window.addEventListener('load', async ()=>{
   await tryAutoLoadPDF();
   await loadNoteIfAny();
 });
-window.addEventListener('resize', ()=> drawPage() );
+window.addEventListener('resize', ()=>{ drawPage(); centerView(); } );
 </script>
 </body>
 </html>
-
