@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>手書きメモ（PDF注釈・配布・自動保存）</title>
+<title>手書きメモ（PDF注釈・配布・管理・自動保存）</title>
 <link rel="icon" href="data:,">
 <style>
   :root{ --bg:#f7f7f9; --bd:#dcdfe3; --chip:#eef3ff; --accent:#4c7dff; --text:#1a1a1a; }
@@ -34,7 +34,7 @@
   .dot.saved{background:#10b981}
   .dot.error{background:#ef4444}
   .zoom{display:flex;gap:.25rem}
-  dialog{border:1px solid var(--bd);border-radius:.8rem;padding:1rem;max-width:min(720px,calc(100vw - 2rem))}
+  dialog{border:1px solid var(--bd);border-radius:.8rem;padding:1rem;max-width:min(820px,calc(100vw - 2rem))}
   dialog::backdrop{ background:rgba(0,0,0,.15); }
   dialog form{display:grid;gap:.7rem}
   .row{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
@@ -58,6 +58,8 @@
       <button id="openPdfUrlBtn" class="btn">🌐 URL読込</button>
       <button id="copyShareBtn" class="btn">🔗 共有リンク</button>
       <button id="batchLinksBtn" class="btn">🔢 一括</button>
+      <div class="sep"></div>
+      <button id="manageBtn" class="btn">🗂 管理</button>
     </div>
     <div class="group">
       <span class="chip">👩‍🏫 <span id="chipTeacher">-</span></span>
@@ -173,6 +175,24 @@
   </form>
 </dialog>
 
+<!-- 管理（一覧/削除） -->
+<dialog id="manageDlg">
+  <form method="dialog" id="manageForm">
+    <h3>PDF管理（この先生ID・課題IDの配布PDF）</h3>
+    <div class="row">
+      <span>先生ID: <b id="mTeacher">-</b></span>
+      <span>課題ID: <b id="mAid">-</b></span>
+    </div>
+    <div id="mList" style="max-height:50vh; overflow:auto; border:1px solid #dcdfe3; border-radius:.5rem; padding:.5rem; margin:.5rem 0;">
+      読み込み中…
+    </div>
+    <menu>
+      <button value="cancel">閉じる</button>
+      <button id="mRefresh" value="default">再読み込み</button>
+    </menu>
+  </form>
+</dialog>
+
 <script type="module">
 /* ====== 設定 ====== */
 import * as pdfjsLib from './build/pdf.mjs';
@@ -217,6 +237,9 @@ const ui = {
   batchDlg:$('batchDlg'), bCount:$('bCount'), bStart:$('bStart'), bDigits:$('bDigits'),
   bPrefix:$('bPrefix'), bTeacher:$('bTeacher'), bAid:$('bAid'), bPdf:$('bPdf'),
   bGenerate:$('bGenerate'), bWarn:$('bWarn'), bOutput:$('bOutput'), bCopy:$('bCopy'), bDownload:$('bDownload'), bActions:$('bActions'),
+  // 管理
+  manageBtn:$('manageBtn'), manageDlg:$('manageDlg'),
+  mTeacher:$('mTeacher'), mAid:$('mAid'), mList:$('mList'), mRefresh:$('mRefresh'),
 };
 
 /* ====== ダイアログ安全オープン ====== */
@@ -224,7 +247,7 @@ function openModalSafe(dlg){
   try{ if(typeof dlg.showModal==='function') dlg.showModal(); else dlg.show(); }
   catch{ dlg.show(); }
 }
-[ui.batchDlg, ui.idsDlg].forEach(dlg=>{
+[ui.batchDlg, ui.idsDlg, ui.manageDlg].forEach(dlg=>{
   if(!dlg) return;
   dlg.addEventListener('cancel', (e)=>{ e.preventDefault(); dlg.close(); });
   dlg.addEventListener('click', (e)=>{
@@ -233,7 +256,7 @@ function openModalSafe(dlg){
     if(!inside) dlg.close();
   });
 });
-window.addEventListener('pageshow', ()=>{ [ui.batchDlg, ui.idsDlg].forEach(d=>{ try{ d.close(); }catch{} }); });
+window.addEventListener('pageshow', ()=>{ [ui.batchDlg, ui.idsDlg, ui.manageDlg].forEach(d=>{ try{ d.close(); }catch{} }); });
 
 /* ====== ユーティリティ ====== */
 function toHexColor(c){
@@ -597,7 +620,7 @@ function exportPNG(){
 }
 ui.savePNGBtn.onclick = exportPNG;
 
-/* ====== ノート保存/復元 ====== */
+/* ====== ノート保存/復元（Worker: op=note） ====== */
 let saveTimer=null;
 function scheduleNoteSave(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveNoteNow, 1000); setSaveStatus('saving'); }
 async function saveNoteNow(){
@@ -679,20 +702,18 @@ function buildShareUrl(pdfUrl, overrideStudentId){
   q.set('t', teacherId); q.set('a', assignmentId); q.set('s', overrideStudentId ?? studentId);
   return `${base}?${q.toString()}`;
 }
-/* ★ 読み込み：初期スケール＆中央寄せを適用 */
+/* 読み込み：初期スケール＆中央寄せを適用 */
 async function loadPdfFromUrl(url){
   try{
     const res = await fetch(url, {mode:'cors'});
     if(!res.ok) throw new Error('fetch fail');
     const buf = await res.arrayBuffer();
 
-    // PDFを準備
     state.pdf = await pdfjsLib.getDocument({data:buf}).promise;
     state.totalPages = state.pdf.numPages;
     state.page = 1;
     state.currentPdfUrl = url;
 
-    // 初期スケールのための素サイズを取得
     try{
       const page1 = await state.pdf.getPage(1);
       const v1    = page1.getViewport({scale:1});
@@ -700,15 +721,12 @@ async function loadPdfFromUrl(url){
       state.baseHeight = v1.height;
     }catch{}
 
-    // 初期スケール（幅基準＋少し大きめが既定）
     state.scale = fitScaleForPage(INITIAL_FIT);
 
-    // URLクエリを置換（共有URLの土台維持）
     const qs = new URLSearchParams(location.search);
     qs.set('pdf', url); qs.set('t', teacherId); qs.set('a', assignmentId); qs.set('s', studentId);
     history.replaceState(null,'', location.pathname + '?' + qs.toString());
 
-    // 描画→中央寄せ
     await drawPage();
     centerView();
 
@@ -767,13 +785,9 @@ async function uploadPdfToGithub(file){
   state.currentPdfUrl = rawUrl;
   const share = buildShareUrl(state.currentPdfUrl);
 
-  // まず同タブ表示（失敗しても遷移でカバー）
   try{ await loadPdfFromUrl(state.currentPdfUrl); }catch(e){ console.warn('inline load failed', e); }
 
-  // クリップボード保存（任意）
   if (COPY_LINK_AFTER_UPLOAD) { try { await navigator.clipboard.writeText(share); } catch {} }
-
-  // 共有URLへ実遷移（履歴置換）
   if (AUTO_OPEN_AFTER_UPLOAD) { location.replace(share); return share; }
 
   alert('PDFを公開して読み込みました！');
@@ -828,6 +842,100 @@ ui.bDownload.onclick = ()=>{
   a.download = `${assignmentId}_${teacherId}_links.csv`;
   a.click();
 };
+
+/* ====== 管理（一覧 / 削除） ====== */
+ui.manageBtn.onclick = async ()=>{
+  ui.mTeacher.textContent = teacherId || '-';
+  ui.mAid.textContent     = assignmentId || '-';
+  openModalSafe(ui.manageDlg);
+  await loadPdfList();
+};
+ui.mRefresh.onclick = async (e)=>{ e.preventDefault(); await loadPdfList(); };
+
+async function loadPdfList(){
+  const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
+  if(!key){ ui.mList.textContent = 'APP_KEY未設定のため取得できません'; return; }
+  localStorage.setItem('APP_KEY', key);
+
+  ui.mList.textContent = '読み込み中…';
+
+  try{
+    const u = new URL(SAVE_ENDPOINT);
+    u.searchParams.set('op','list');
+    u.searchParams.set('teacher', teacherId);
+    u.searchParams.set('aid', assignmentId);
+
+    const r = await fetch(u.toString(), {
+      method:'GET',
+      headers:{ 'X-App-Key': key }
+    });
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error || 'list failed');
+
+    if(!j.items.length){
+      ui.mList.textContent = 'PDFはまだありません。';
+      return;
+    }
+
+    const wrap = document.createElement('div');
+    for(const it of j.items){
+      const row = document.createElement('div');
+      row.style.display='grid';
+      row.style.gridTemplateColumns='1fr auto auto auto';
+      row.style.gap='.5rem';
+      row.style.alignItems='center';
+      row.style.borderBottom='1px solid #eee';
+      row.style.padding='.35rem 0';
+
+      const name = document.createElement('div');
+      name.textContent = `${it.name}  (${Math.round(it.size/1024)}KB)`;
+      name.style.overflow='hidden';
+      name.style.textOverflow='ellipsis';
+
+      const openBtn = document.createElement('button');
+      openBtn.className='btn';
+      openBtn.textContent='開く';
+      openBtn.onclick=()=> window.open(it.raw_url, '_blank');
+
+      const copyBtn = document.createElement('button');
+      copyBtn.className='btn';
+      copyBtn.textContent='コピー';
+      copyBtn.onclick=()=> navigator.clipboard.writeText(it.raw_url).then(()=> alert('URLをコピーしました'));
+
+      const delBtn = document.createElement('button');
+      delBtn.className='btn';
+      delBtn.textContent='削除';
+      delBtn.style.borderColor='#f3b1b1';
+      delBtn.onclick = async ()=>{
+        if(!confirm(`「${it.name}」を削除しますか？`)) return;
+        try{
+          const rr = await fetch(`${SAVE_ENDPOINT}?op=delete`, {
+            method:'POST',
+            headers:{
+              'Content-Type':'application/json',
+              'X-App-Key': localStorage.getItem('APP_KEY') || ''
+            },
+            body: JSON.stringify({ path: it.path, sha: it.sha })
+          });
+          const jj = await rr.json();
+          if(!jj.ok) throw new Error(jj.error || 'delete failed');
+          await loadPdfList();
+        }catch(e){ alert('削除に失敗しました: '+e.message); }
+      };
+
+      row.appendChild(name);
+      row.appendChild(openBtn);
+      row.appendChild(copyBtn);
+      row.appendChild(delBtn);
+      wrap.appendChild(row);
+    }
+    ui.mList.innerHTML='';
+    ui.mList.appendChild(wrap);
+
+  }catch(e){
+    ui.mList.textContent = '取得に失敗しました: ' + e.message;
+  }
+}
 
 /* ====== 自動PDF読込 ====== */
 async function tryAutoLoadPDF(){
