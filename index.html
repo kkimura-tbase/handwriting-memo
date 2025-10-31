@@ -206,7 +206,7 @@ const COPY_LINK_AFTER_UPLOAD = true;
 
 /* 初期表示（中央寄せ＆ちょい拡大）のパラメータ */
 const INITIAL_FIT = 'fit-width';   // 'fit-width' | 'fit-height' | 'fit-page'
-const INITIAL_SCALE_BONUS = 1.15;  // 1.0より大きいと「少し大きめ」
+const INITIAL_SCALE_BONUS = 1.15;
 
 /* ====== 参照 ====== */
 const dpr = window.devicePixelRatio||1;
@@ -219,6 +219,38 @@ const stageWrap = document.getElementById('stageWrap');
 const $ = id=>document.getElementById(id);
 const SCROLL_STEP = 300;
 
+/* ====== Worker 呼び出しユーティリティ（★重要：ヘッダ＆クエリ両方で送る） ====== */
+function getAppConf(){
+  return {
+    teacher: localStorage.getItem('teacherId') || '',
+    aid:     localStorage.getItem('aid') || '',
+    student: localStorage.getItem('studentId') || '',
+    appKey:  localStorage.getItem('APP_KEY') || ''
+  };
+}
+function workerHeaders(extra = {}){
+  const c = getAppConf();
+  return {
+    'X-App-Key': c.appKey,
+    'X-Teacher': c.teacher,
+    'X-Aid':     c.aid,
+    'X-Student': c.student,
+    ...extra
+  };
+}
+function workerURL(op, extraQuery = {}){
+  const c = getAppConf();
+  const qs = new URLSearchParams({
+    op,
+    teacher: c.teacher,
+    aid:     c.aid,
+    app:     c.appKey,            // 旧互換クエリ
+    ...extraQuery
+  });
+  return `${UPLOAD_ENDPOINT}/?${qs.toString()}`;
+}
+
+/* ====== 状態 ====== */
 const ui = {
   penBtn:$('penBtn'), eraserBtn:$('eraserBtn'), textBtn:$('textBtn'), handBtn:$('handBtn'),
   scrollUpBtn:$('scrollUpBtn'), scrollDownBtn:$('scrollDownBtn'),
@@ -231,34 +263,15 @@ const ui = {
   chipTeacher:$('chipTeacher'), chipAid:$('chipAid'), chipStudent:$('chipStudent'),
   editIdsBtn:$('editIdsBtn'), saveDot:$('saveDot'), saveText:$('saveText'),
   zoomIn:$('zoomIn'), zoomOut:$('zoomOut'), zoomReset:$('zoomReset'),
-  // dialogs
   idsDlg:$('idsDlg'), idTeacher:$('idTeacher'), idAid:$('idAid'), idStudent:$('idStudent'),
   idKey:$('idKey'), idsSave:$('idsSave'),
   batchDlg:$('batchDlg'), bCount:$('bCount'), bStart:$('bStart'), bDigits:$('bDigits'),
   bPrefix:$('bPrefix'), bTeacher:$('bTeacher'), bAid:$('bAid'), bPdf:$('bPdf'),
   bGenerate:$('bGenerate'), bWarn:$('bWarn'), bOutput:$('bOutput'), bCopy:$('bCopy'), bDownload:$('bDownload'), bActions:$('bActions'),
-  // 管理
   manageBtn:$('manageBtn'), manageDlg:$('manageDlg'),
   mTeacher:$('mTeacher'), mAid:$('mAid'), mList:$('mList'), mRefresh:$('mRefresh'),
 };
 
-/* ====== ダイアログ安全オープン ====== */
-function openModalSafe(dlg){
-  try{ if(typeof dlg.showModal==='function') dlg.showModal(); else dlg.show(); }
-  catch{ dlg.show(); }
-}
-[ui.batchDlg, ui.idsDlg, ui.manageDlg].forEach(dlg=>{
-  if(!dlg) return;
-  dlg.addEventListener('cancel', (e)=>{ e.preventDefault(); dlg.close(); });
-  dlg.addEventListener('click', (e)=>{
-    const r = dlg.getBoundingClientRect();
-    const inside = e.clientX>=r.left && e.clientX<=r.right && e.clientY<=r.bottom && e.clientY>=r.top;
-    if(!inside) dlg.close();
-  });
-});
-window.addEventListener('pageshow', ()=>{ [ui.batchDlg, ui.idsDlg, ui.manageDlg].forEach(d=>{ try{ d.close(); }catch{} }); });
-
-/* ====== ユーティリティ ====== */
 function toHexColor(c){
   if(!c) return '#111111';
   c=String(c).trim().toLowerCase();
@@ -299,14 +312,12 @@ function centerView(){
   stageWrap.scrollTop  = targetTop;
 }
 
-/* ====== 状態 ====== */
 const state = {
   tool:'pen', color:toHexColor(ui.color.value), size:+ui.size.value,
   drawing:false, last:null, stroke:[], history:[], redoStack:[],
   pdf:null, page:1, totalPages:0,
   scale:1, baseWidth:0, baseHeight:0,
-  margin:0,              /* 余白ゼロ */
-  pdfOffsetX:0, pdfOffsetY:0,
+  margin:0, pdfOffsetX:0, pdfOffsetY:0,
   texts:[],
   isPinching:false, touches:new Map(), lastCenter:null, lastDist:0, rafScheduled:false,
   isHandPanning:false, handStart:{x:0,y:0,sl:0,st:0},
@@ -340,7 +351,7 @@ ui.editIdsBtn.onclick = ()=>{
   $('idAid').value     = assignmentId || '';
   $('idStudent').value = studentId || '';
   $('idKey').value     = localStorage.getItem('APP_KEY') || '';
-  openModalSafe(ui.idsDlg);
+  try{ ui.idsDlg.showModal(); }catch{ ui.idsDlg.show(); }
 };
 $('idsSave').onclick = (e)=>{
   e.preventDefault();
@@ -524,7 +535,7 @@ $('zoomIn').onclick = ()=>{ state.scale=Math.min(3, state.scale*1.2); drawPage()
 $('zoomOut').onclick= ()=>{ state.scale=Math.max(0.5, state.scale/1.2); drawPage(); centerView(); };
 $('zoomReset').onclick= ()=>{ state.scale=fitScaleForPage(INITIAL_FIT); drawPage(); centerView(); };
 
-/* ====== 手ツール：スクロール（マウスは自前、指はネイティブ） ====== */
+/* ====== 手ツール ====== */
 function canHandPanPointer(e){
   if(state.isPinching) return false;
   if(state.tool!=='hand') return false;
@@ -620,28 +631,23 @@ function exportPNG(){
 }
 ui.savePNGBtn.onclick = exportPNG;
 
-/* ====== ノート保存/復元（Worker: op=note） ====== */
+/* ====== ノート保存/復元（Worker: op=note / getnote） ====== */
 let saveTimer=null;
 function scheduleNoteSave(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveNoteNow, 1000); setSaveStatus('saving'); }
 async function saveNoteNow(){
-  const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
+  let key = localStorage.getItem('APP_KEY');
+  if(!key){ key = prompt(APP_KEY_PROMPT) || ''; localStorage.setItem('APP_KEY', key); }
   if(!key){ setSaveStatus('error'); return; }
-  localStorage.setItem('APP_KEY', key);
+
   const snap = makeNoteSnapshot();
   try{
-    const r = await fetch(`${SAVE_ENDPOINT}?op=note`, {
+    const r = await fetch(workerURL('note'), {
       method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'X-App-Key': key,
-        'X-Op':'note',
-        'X-Teacher': teacherId,
-        'X-Aid': assignmentId,
-        'X-Student': studentId
-      },
+      headers: workerHeaders({'Content-Type':'application/json'}),
       body: JSON.stringify(snap)
     });
-    if(!r.ok){ setSaveStatus('error'); console.warn('save failed', r.status, await r.text()); }
+    const j = await r.json();
+    if(!j.ok){ setSaveStatus('error'); console.warn('save failed', j); }
     else setSaveStatus('saved');
   }catch(e){ setSaveStatus('error'); console.warn('save error', e); }
 }
@@ -678,19 +684,14 @@ function applyNoteSnapshot(snap){
   layoutTextboxes();
 }
 async function loadNoteIfAny(){
-  const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
-  if(!key) return; localStorage.setItem('APP_KEY', key);
+  const key = localStorage.getItem('APP_KEY') || '';
+  if(!key) return;
   try{
-    const u = new URL(SAVE_ENDPOINT);
-    u.searchParams.set('op','note');
-    u.searchParams.set('teacher', teacherId);
-    u.searchParams.set('aid', assignmentId);
-    u.searchParams.set('student', studentId);
-    u.searchParams.set('key', key);
-    const r = await fetch(u.toString(), { method:'GET' });
-    if(!r.ok) return;
+    const r = await fetch(workerURL('getnote'), { method:'GET', headers: workerHeaders() });
     const j = await r.json();
-    if(j && j.ok && j.note) applyNoteSnapshot(j.note);
+    if(j && j.ok && j.text){
+      try{ applyNoteSnapshot(JSON.parse(j.text)); }catch{ /* 無視 */ }
+    }
   }catch(e){ console.warn('load note err', e); }
 }
 
@@ -702,7 +703,6 @@ function buildShareUrl(pdfUrl, overrideStudentId){
   q.set('t', teacherId); q.set('a', assignmentId); q.set('s', overrideStudentId ?? studentId);
   return `${base}?${q.toString()}`;
 }
-/* 読み込み：初期スケール＆中央寄せを適用 */
 async function loadPdfFromUrl(url){
   try{
     const res = await fetch(url, {mode:'cors'});
@@ -722,7 +722,6 @@ async function loadPdfFromUrl(url){
     }catch{}
 
     state.scale = fitScaleForPage(INITIAL_FIT);
-
     const qs = new URLSearchParams(location.search);
     qs.set('pdf', url); qs.set('t', teacherId); qs.set('a', assignmentId); qs.set('s', studentId);
     history.replaceState(null,'', location.pathname + '?' + qs.toString());
@@ -735,7 +734,6 @@ async function loadPdfFromUrl(url){
     console.warn(e);
   }
 }
-
 ui.openPdfUrlBtn.onclick = async ()=>{
   const u = prompt('読み込むPDFのURL（raw.githubusercontent.com など）を入力');
   if(!u) return;
@@ -750,22 +748,19 @@ ui.copyShareBtn.onclick = async ()=>{
 /* ====== GitHub にPDF公開（Worker経由） ====== */
 async function uploadPdfToGithub(file){
   if (file.size > 9.5 * 1024 * 1024) { alert('PDFが10MBを超えています'); return null; }
-  const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
+  let key = localStorage.getItem('APP_KEY');
+  if(!key){ key = prompt(APP_KEY_PROMPT) || ''; localStorage.setItem('APP_KEY', key); }
   if (!key) return null;
-  localStorage.setItem('APP_KEY', key);
 
   let data;
   try{
-    const res = await fetch(UPLOAD_ENDPOINT, {
+    const res = await fetch(workerURL('upload'), {
       method:'POST',
-      headers:{
+      headers: workerHeaders({
         'Content-Type':'application/pdf',
-        'X-App-Key': key,
-        'X-Filename': file.name || 'worksheet.pdf',
-        'X-Teacher': teacherId,
-        'X-Aid': assignmentId
-      },
-      body:file
+        'X-Filename': file.name || 'worksheet.pdf'
+      }),
+      body: await file.arrayBuffer()
     });
     const txt = await res.text();
     try{ data = JSON.parse(txt); }catch{ throw new Error('Invalid JSON: '+txt); }
@@ -807,7 +802,7 @@ ui.batchLinksBtn.onclick = ()=>{
   ui.bPdf.value = state.currentPdfUrl || '';
   ui.bWarn.style.display = state.currentPdfUrl ? 'none' : 'block';
   ui.bOutput.style.display = 'none'; ui.bActions.style.display='none';
-  openModalSafe(ui.batchDlg);
+  try{ ui.batchDlg.showModal(); }catch{ ui.batchDlg.show(); }
 };
 ui.bGenerate.addEventListener('click', (ev)=>{
   ev.preventDefault();
@@ -847,27 +842,21 @@ ui.bDownload.onclick = ()=>{
 ui.manageBtn.onclick = async ()=>{
   ui.mTeacher.textContent = teacherId || '-';
   ui.mAid.textContent     = assignmentId || '-';
-  openModalSafe(ui.manageDlg);
+  try{ ui.manageDlg.showModal(); }catch{ ui.manageDlg.show(); }
   await loadPdfList();
 };
 ui.mRefresh.onclick = async (e)=>{ e.preventDefault(); await loadPdfList(); };
 
 async function loadPdfList(){
-  const key = localStorage.getItem('APP_KEY') || prompt(APP_KEY_PROMPT) || '';
+  let key = localStorage.getItem('APP_KEY');
+  if(!key){ key = prompt(APP_KEY_PROMPT) || ''; localStorage.setItem('APP_KEY', key); }
   if(!key){ ui.mList.textContent = 'APP_KEY未設定のため取得できません'; return; }
-  localStorage.setItem('APP_KEY', key);
 
   ui.mList.textContent = '読み込み中…';
-
   try{
-    const u = new URL(SAVE_ENDPOINT);
-    u.searchParams.set('op','list');
-    u.searchParams.set('teacher', teacherId);
-    u.searchParams.set('aid', assignmentId);
-
-    const r = await fetch(u.toString(), {
+    const r = await fetch(workerURL('list'), {
       method:'GET',
-      headers:{ 'X-App-Key': key }
+      headers: workerHeaders()
     });
     const j = await r.json();
     if(!j.ok) throw new Error(j.error || 'list failed');
@@ -888,7 +877,7 @@ async function loadPdfList(){
       row.style.padding='.35rem 0';
 
       const name = document.createElement('div');
-      name.textContent = `${it.name}  (${Math.round(it.size/1024)}KB)`;
+      name.textContent = `${it.name}  (${Math.round((it.size||0)/1024)}KB)`;
       name.style.overflow='hidden';
       name.style.textOverflow='ellipsis';
 
@@ -909,13 +898,9 @@ async function loadPdfList(){
       delBtn.onclick = async ()=>{
         if(!confirm(`「${it.name}」を削除しますか？`)) return;
         try{
-          const rr = await fetch(`${SAVE_ENDPOINT}?op=delete`, {
+          const rr = await fetch(workerURL('delete', { path: it.path }), {
             method:'POST',
-            headers:{
-              'Content-Type':'application/json',
-              'X-App-Key': localStorage.getItem('APP_KEY') || ''
-            },
-            body: JSON.stringify({ path: it.path, sha: it.sha })
+            headers: workerHeaders()
           });
           const jj = await rr.json();
           if(!jj.ok) throw new Error(jj.error || 'delete failed');
